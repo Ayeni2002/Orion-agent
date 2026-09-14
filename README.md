@@ -1,123 +1,157 @@
-# orion-agent
+# Orion
 
-A CLI DeFi scoring agent. Give it a token, it pulls live market data from
-CoinGecko, asks an LLM for a structured risk/opportunity assessment, and prints
-a report.
+**Autonomous AI Research Agent.**
 
-```
-CoinGecko (no key)  →  raw market data  →  LLM JSON  →  score + verdict
-```
+Orion turns complex goals into structured, researched, actionable results. The
+intended workflow — understand an objective, plan the work, select tools,
+execute, observe, evaluate, and revise — is the direction of the project, not
+something this phase implements.
+
+> **Phase 1 is the foundation only.** There is no agent engine, no planner, no
+> tool runtime, no model provider, no research, no reports and no memory. The
+> workspace collects an objective and stops. See [Not implemented](#not-implemented).
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The intended shape of the system — frontend, backend, database boundary, and the agent engine, model abstraction, tool system and memory that later phases add |
+| [`docs/DEVELOPMENT_PHASES.md`](docs/DEVELOPMENT_PHASES.md) | The eight-phase roadmap, what each phase depends on, and the gates every phase must pass |
+
+## Stack
+
+| Concern | Choice |
+| --- | --- |
+| Framework | Next.js (App Router) + React, TypeScript throughout |
+| Styling | Tailwind CSS v4 + shadcn/ui primitives |
+| Database | Supabase / PostgreSQL |
+| Validation | Zod |
+| Testing | Vitest |
+
+The model provider is intentionally **not** chosen yet. No provider SDK is a
+dependency, no provider is hard-coded, and the environment variable names are
+provider-neutral — so the agent engine can be added without rewriting the app
+around one vendor.
 
 ## Setup
 
 ```bash
-cd orion-agent
-python -m venv .venv && .venv\Scripts\activate   # Windows
-# source .venv/bin/activate                      # macOS / Linux
-pip install -r requirements.txt
-copy .env.example .env                           # then fill in the LLM_* values
+npm install
+cp .env.example .env.local     # then fill in the values
+npm run dev
 ```
 
-The provider is configuration, not code. Fill these in:
+The dev server runs on <http://localhost:3000>. Orion renders without Supabase
+configured; only the features that need a database will report that it is
+missing.
 
-| Variable | What goes in it |
-|---|---|
-| `LLM_ENDPOINT` | The chat endpoint URL |
-| `LLM_API_STYLE` | `anthropic` or `openai` — see below |
-| `LLM_MODEL` | The exact model id from your provider's dashboard |
-| `LLM_API_KEY` | Your key for that provider |
+Requires Node 20.9 or later (Next.js 16's minimum). No version is pinned in
+`package.json`, so add an `engines` field or `.nvmrc` if you need one.
 
-`LLM_MODEL` has no default on purpose: an unset model stops at startup with a
-readable message instead of failing at the API with a confusing one.
+## Scripts
 
-The two styles are genuinely different wire formats, not synonyms:
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Dev server with hot reload |
+| `npm run build` | Production build |
+| `npm start` | Serve the production build |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Vitest, single run |
+| `npm run test:watch` | Vitest in watch mode |
 
-| | `anthropic` | `openai` |
-|---|---|---|
-| Auth | `x-api-key` | `Authorization: Bearer` |
-| System prompt | top-level `system` field | first entry in `messages` |
-| JSON mode | none — enforced by the prompt | `response_format: json_object` |
-| Reply is at | `content[0].text` | `choices[0].message.content` |
-
-Pick `anthropic` for a relay whose docs mention `ANTHROPIC_BASE_URL` or
-`/v1/messages`, and `openai` for one that mentions `/v1/chat/completions`. The
-reply is parsed defensively either way, so a model that wraps its JSON in a
-```json fence still works.
-
-## Run
-
-```bash
-python src/agent.py ethereum
-python src/agent.py solana
-python src/agent.py "pepe"                        # not a valid id — name-search fallback
-
-python src/agent.py --warm ethereum solana pepe   # cache these now, for later
-python src/agent.py ethereum --offline            # replay the cached run
-```
-
-Every run is appended to `demo/sample_run.md` and cached to `demo/cache/`.
-
-## Offline mode
-
-Two things need the network: CoinGecko for the data, the LLM for the scoring. A
-cached run holds **both**, so `--offline` replays a complete result with no
-network at all. If a live run fails partway — either hop — the agent drops to the
-cached run automatically.
-
-```bash
-python src/agent.py --warm ethereum solana pepe   # once, while you have wifi
-python src/agent.py ethereum --offline            # on stage, wifi or not
-```
-
-`demo/cache/` is committed on purpose, so a fresh clone on the demo laptop works
-offline with no preparation.
-
-**The cached banner is deliberate.** Cached output is not live data, and printing
-that plainly beats being caught out when a judge asks whether it was live.
+There is no CI workflow yet. Run `npm run typecheck && npm test && npm run build`
+before pushing.
 
 ## Layout
 
-| Path | What it is |
-|---|---|
-| `src/agent.py` | CLI entry point — fetch, score, print |
-| `src/tools/market_data.py` | CoinGecko client (retries, rate-limit handling) |
-| `src/llm.py` | LLM client — either dialect, chosen by `.env` |
-| `src/tools/cache.py` | Offline cache of complete runs |
-| `src/prompts/system_prompt.md` | Scoring rubric. Edit this to change the agent's behaviour |
-| `demo/cache/` | Cached runs — committed, so a fresh clone works offline |
-| `demo/sample_run.md` | Auto-appended run log (gitignored) |
+```
+src/
+  app/                    routes (App Router)
+    api/health/route.ts   liveness endpoint — the API convention in miniature
+    layout.tsx            root layout: shell + metadata
+    page.tsx              landing page
+    workspace/page.tsx    workspace shell
+    loading.tsx error.tsx not-found.tsx
+    globals.css           Tailwind v4 import + design tokens
+  components/
+    layout/               app chrome (header, shell)
+    ui/                   shadcn/ui primitives
+    workspace/            workspace-specific components
+  lib/
+    env.ts                the only place environment variables are read
+    supabase/             browser and server Supabase clients
+    validation/           Zod schemas
+    utils.ts              cn()
+  server/
+    errors.ts             ServiceError — carries an HTTP status
+    services/             business logic
+  types/
+    agent.ts              domain vocabulary for the agent system
+```
 
-## Demo-day notes
+### Conventions
 
-- **CoinGecko's free tier rate-limits hard**, and a room full of hackers on one
-  wifi makes it worse. The client retries with backoff, then fails with a clear
-  message rather than a traceback. If it does fail, show a saved entry from
-  `demo/sample_run.md`.
-- **Name search prefers the highest-market-cap match**, not the first text hit —
-  searching a ticker can otherwise land on an impersonator, which matters a lot
-  in a tool whose whole job is risk scoring.
-- The prompt is the most interesting knob. It asks for a 0-100 score, a verdict, a
-  confidence level, key signals, risk flags, and a plain-English summary. Scores
-  are banded (see the table in `src/prompts/system_prompt.md`) so the range gets
-  used instead of everything clustering near 50. `score_check.py` exists to tell
-  you whether that is actually working.
-- **Console output is deliberately ASCII-only — keep it that way.** The Windows
-  console codepage can't always encode em dashes or curly quotes, and printing an
-  unencodable character raises `UnicodeEncodeError` mid-report. The model's own
-  `summary` text is likewise guarded with `errors="replace"` in `main()`, since
-  we don't control what it returns.
+**Route Handlers stay thin.** A handler in `src/app/api/**/route.ts` parses and
+validates the request, calls a service, and shapes the HTTP response. It holds
+no business logic and makes no direct database calls.
 
-## Not done yet
+**Business logic lives in `src/server/services/**`.** Services take plain
+arguments and return plain data. They must not import React, `next/headers`, or
+anything from `src/components`, which is what keeps them callable from a Route
+Handler, a Server Action or a test without a request in scope. Failures are
+signalled by throwing `ServiceError` with a status.
 
-- Test suites, all runnable with no API key:
-  - `python test_llm.py` — request shaping for both dialects, reply parsing,
-    and HTTP error mapping. No network.
-  - `python test_cache.py` — the offline cache and the live→cached fallback.
-    No network.
-  - `python test_market_data.py` — mocked failure handling: rate limits, 5xx,
-    404s, backoff caps, search ranking. No network.
-  - `python smoke_test.py` — live checks against CoinGecko (4 requests).
-  A `SKIP` line in the smoke test means CoinGecko rate-limited you and that
-  check did not run, so a run with skips is not a clean bill.
-- Data comes from CoinGecko only — no on-chain signals (Etherscan, DEX pools,
-  holder distribution). That's the obvious next depth increase.
+**Supabase clients own connectivity only.** `src/lib/supabase/client.ts` is for
+the browser and `server.ts` for Server Components, Server Actions and Route
+Handlers. Server code must never import the browser client, and client code must
+never import the server one — `next/headers` does not exist in a browser.
+
+**Environment is read in one place.** `src/lib/env.ts` validates and returns
+configuration. A missing variable throws a message that names it, instead of
+failing as an obscure error deeper inside a client. `NEXT_PUBLIC_*` values are
+inlined at build time, so they are only read via literal `process.env.X`
+property accesses — a computed lookup is not replaced in client code.
+
+**Types describe shape, not behaviour.** `src/types/agent.ts` holds `Agent`,
+`AgentTask`, `TaskStatus`, `TaskStep`, `Tool`, `ToolExecution` and `AgentResult`.
+Timestamps are ISO 8601 strings so every type survives a JSON round-trip. Prefer
+adding optional fields or new union members over changing existing ones.
+
+## Testing
+
+`npm test` runs Vitest in a `node` environment. Coverage is deliberately small
+and covers only code that exists: an objective-validation test and a test for
+the system service behind `/api/health`. There is no component-render or
+end-to-end layer yet.
+
+Tests import `describe`/`it`/`expect` explicitly rather than relying on globals,
+and the `@/` path alias resolves in tests via `vitest.config.ts`.
+
+## Environment
+
+See `.env.example`. Only `NEXT_PUBLIC_*` variables reach the browser; no secret
+should ever carry that prefix. `SUPABASE_SERVICE_ROLE_KEY` bypasses Row Level
+Security and is server-only — it is documented but not yet read by any code.
+
+## Not implemented
+
+Everything below belongs to later phases and is deliberately absent:
+
+- **Agent engine** — no planner, executor, scheduler, or observe/evaluate loop.
+- **Model provider** — no provider client, no SDK, no prompt layer.
+- **Tools** — no tool registry or tool runtime.
+- **Research, reports, memory** — no retrieval, no report generation, no state
+  that persists between runs.
+- **Authentication and the database schema** — the Supabase clients and the
+  conventions for using them exist; no tables, migrations, policies or auth flow
+  do. The workspace does not save anything.
+
+The `Start Agent` button validates the objective and reports that the engine is
+not implemented. It does not simulate progress, and no result is stored.
+
+## History
+
+This repository previously held a Python CLI DeFi scoring agent. It was replaced
+by this application in a later commit; the previous code remains recoverable in
+the repository history.
