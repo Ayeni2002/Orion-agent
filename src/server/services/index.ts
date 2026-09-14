@@ -17,6 +17,8 @@
  *     Owns connectivity only.
  *
  * Agent execution, projects, research and reports are each added as their own
- * service module here. Nothing in Phase 1 implements those.
+ * service module here. `./agent.ts` is the first of those to exist: it owns
+ * objective validation, starts an execution and reads one back. Projects,
+ * research and reports are still unimplemented.
  */
 export {};

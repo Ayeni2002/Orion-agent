@@ -12,41 +12,54 @@ import {
 /**
  * Objective capture for the workspace.
  *
- * Validation is real — it runs the same Zod schema the run endpoint will use,
- * and it is the only part of this form that does anything. Submission does not
- * call a model, start a task or store anything, and the notice says so rather
- * than showing progress for work that is not happening.
+ * Validation runs the same Zod schema the API validates against, so a
+ * malformed objective is caught while it is being typed rather than after a
+ * round trip. The server still validates — this is a courtesy to the user, not
+ * a substitute for validating untrusted input at the boundary.
  *
- * The project selector is present but disabled: there are no projects to select
- * because nothing persists yet, and an enabled control that silently discarded
- * the choice would be worse than one that admits it is not ready.
+ * The component does not perform the request itself. It validates, hands a
+ * string to `onSubmit`, and renders whatever `isSubmitting` and `error` say.
+ *
+ * The project selector remains disabled. No projects persist yet, and an
+ * enabled control that silently discarded the choice would be worse than one
+ * that admits it is not ready.
  */
-export function ObjectiveForm() {
+
+export interface ObjectiveFormProps {
+  onSubmit: (objective: string) => void;
+  isSubmitting: boolean;
+  /** A failure from the transport or the server, shown next to the field. */
+  error: string | null;
+}
+
+export function ObjectiveForm({
+  onSubmit,
+  isSubmitting,
+  error,
+}: ObjectiveFormProps) {
   const fieldId = useId();
   const errorId = `${fieldId}-error`;
   const projectId = `${fieldId}-project`;
 
   const [objective, setObjective] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const shownError = validationError ?? error;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setNotice(null);
 
     const parsed = objectiveSchema.safeParse({ objective });
 
     if (!parsed.success) {
-      setError(
+      setValidationError(
         parsed.error.issues[0]?.message ?? "That objective is not valid.",
       );
       return;
     }
 
-    setError(null);
-    setNotice(
-      "Objective validated. Orion's agent engine is not implemented yet, so nothing was planned, executed or stored — that arrives with the next phase.",
-    );
+    setValidationError(null);
+    onSubmit(parsed.data.objective);
   }
 
   return (
@@ -67,14 +80,14 @@ export function ObjectiveForm() {
           value={objective}
           onChange={(event) => setObjective(event.target.value)}
           placeholder="e.g. Compare the leading approaches to grid-scale storage and report the trade-offs."
-          aria-invalid={error !== null}
-          aria-describedby={error !== null ? errorId : undefined}
+          aria-invalid={shownError !== null}
+          aria-describedby={shownError !== null ? errorId : undefined}
           className="min-h-40"
         />
 
-        {error !== null ? (
+        {shownError !== null ? (
           <p id={errorId} role="alert" className="text-sm text-destructive">
-            {error}
+            {shownError}
           </p>
         ) : null}
       </div>
@@ -101,20 +114,15 @@ export function ObjectiveForm() {
       </div>
 
       <div className="space-y-2">
-        <Button type="submit">Start Agent</Button>
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? "Running…" : "Start Agent"}
+        </Button>
 
         <p className="text-xs text-muted-foreground">
-          Agent execution is not implemented. This validates your objective and
-          stops.
+          Orion plans the objective, runs each step and reports what happened.
+          The run completes before the response returns, so there is nothing to
+          wait for afterwards.
         </p>
-      </div>
-
-      <div aria-live="polite">
-        {notice !== null ? (
-          <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-            {notice}
-          </p>
-        ) : null}
       </div>
     </form>
   );

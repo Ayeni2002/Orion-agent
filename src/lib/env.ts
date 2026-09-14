@@ -62,3 +62,71 @@ export function getSupabaseConfig(): SupabaseConfig {
 
   return parsed.data;
 }
+
+/**
+ * Model providers Orion knows how to construct.
+ *
+ * Only the deterministic development adapter is implemented. Naming a real
+ * provider here without implementing it would turn a configuration mistake
+ * into a run that silently produces development output while appearing to be
+ * a real inference call, so unsupported values are rejected loudly instead.
+ */
+export const SUPPORTED_MODEL_PROVIDERS = ["dev"] as const;
+
+export type ModelProviderId = (typeof SUPPORTED_MODEL_PROVIDERS)[number];
+
+const modelProviderSchema = z.object({
+  provider: z.enum(SUPPORTED_MODEL_PROVIDERS),
+  model: z.string().min(1).optional(),
+  baseUrl: z.string().url().optional(),
+});
+
+export interface ModelProviderConfig {
+  provider: ModelProviderId;
+  model?: string;
+  baseUrl?: string;
+  /**
+   * Whether an API key is present in the environment — never the key itself.
+   *
+   * This module is the only one permitted to read `process.env`, and the key
+   * is read *only* to compute this boolean. Nothing outside can obtain the
+   * value, which is what makes "never expose model credentials" a property of
+   * the code rather than a rule someone has to remember. If a future phase
+   * needs the credential, it should be passed straight into that provider's
+   * client and never returned from a function like this one.
+   */
+  hasApiKey: boolean;
+}
+
+/**
+ * Model provider configuration.
+ *
+ * Defaults to the development adapter when `ORION_LLM_PROVIDER` is unset, so a
+ * fresh checkout runs without any configuration at all.
+ */
+export function getModelProviderConfig(): ModelProviderConfig {
+  const rawProvider = process.env.ORION_LLM_PROVIDER?.trim() || "dev";
+  const model = process.env.ORION_LLM_MODEL?.trim() || undefined;
+  const baseUrl = process.env.ORION_LLM_BASE_URL?.trim() || undefined;
+
+  const parsed = modelProviderSchema.safeParse({
+    provider: rawProvider,
+    model,
+    baseUrl,
+  });
+
+  if (!parsed.success) {
+    throw new Error(
+      `ORION_LLM_PROVIDER is set to "${rawProvider}", which Orion does not ` +
+        `implement. Supported values: ${SUPPORTED_MODEL_PROVIDERS.join(", ")}. ` +
+        "Leave it unset to use the deterministic development provider.",
+    );
+  }
+
+  const apiKey = process.env.ORION_LLM_API_KEY;
+
+  return {
+    ...parsed.data,
+    hasApiKey: typeof apiKey === "string" && apiKey.trim().length > 0,
+  };
+}

@@ -1,9 +1,12 @@
 # Orion — Architecture
 
-> **Status: Phase 1 (Foundation).** The agent engine, model provider, tool runtime,
-> research layer, report generation and memory described below under *future* **do
-> not exist**. This document records the intended shape of the system so that later
-> phases extend what is here rather than restructure it.
+> **Status: Phase 3 (Agent engine).** The agent engine exists and runs: it plans an
+> objective, executes the plan, evaluates the outcome and returns a structured result.
+> What backs it is deliberately thin — a deterministic development adapter rather than
+> a real model, and an empty tool registry — so **no external research, browsing,
+> scraping or tool execution exists**. The database, memory, reports and deployment
+> described below under *future* **do not exist**. Sections record what is real and
+> what is not; nothing here claims a capability the code does not have.
 >
 > Read this alongside [`DEVELOPMENT_PHASES.md`](./DEVELOPMENT_PHASES.md), which says
 > which phase builds which part.
@@ -34,28 +37,34 @@ Next.js App Router, TypeScript throughout, Tailwind CSS v4, shadcn/ui primitives
 ```
 src/app/           routes — layout, pages, loading/error boundaries
 src/components/
-  layout/          application chrome (header, shell)
+  common/          EmptyState, PageHeader, StatusIndicator — shared presentation
+  layout/          application chrome (shells, sidebar, navigation)
   ui/              shadcn/ui primitives — presentation only
   workspace/       workspace-specific composition
 ```
 
 **Server Components are the default.** A component becomes a Client Component
 (`"use client"`) only when it needs state, effects, or browser APIs — for example
-`src/components/workspace/objective-form.tsx`, which owns form state.
+`src/components/workspace/workspace-console.tsx`, which owns the execution, the
+request that produces it, and the capability check it performs on mount.
 
 **Route-level states are first-class**, not an afterthought: `loading.tsx`,
 `error.tsx` and `not-found.tsx` sit beside the routes they cover, so every route has
 a defined loading and failure appearance without per-component handling.
 
 **The UI never reaches for data directly.** Components receive plain data as props or
-call a service. In Phase 1 the only such boundary is the health endpoint; the pattern
-is what matters, not the current surface area.
+call a service. The workspace is the one place this is exercised for real: it collects
+an objective, posts it to `/api/agent/executions`, and renders exactly what came back.
+It does not know how a plan is produced, and it does not advance a step's status —
+when a run finishes, it is the server that said so.
 
 ## 3. Backend architecture
 
 ```
 src/app/api/**/route.ts     thin HTTP handlers
+src/server/http.ts          body reading + error-to-response mapping
 src/server/services/**      business logic
+src/server/agent/**         the agent engine — see §5
 src/server/errors.ts        ServiceError — an error that carries an HTTP status
 ```
 
@@ -98,108 +107,183 @@ in `.env.example` but deliberately unread by any code until a phase needs it.
 **The database is behind services.** No component and no Route Handler issues a query
 directly. When the schema arrives, the only files that change are the services.
 
-**Intended future schema** (Phase 2+, not created): users, projects, agent tasks,
+**Intended future schema** (Phase 5, not created): users, projects, agent tasks,
 task steps, tool executions, research artefacts, reports, agent state. The domain
 types in `src/types/agent.ts` are the vocabulary those tables will be shaped around —
 which is why they exist before the database does.
 
-## 5. Future agent engine
+## 5. Agent engine
 
-**Not implemented.** No planner, executor, scheduler, or observe/evaluate loop exists.
-
-The intended workflow — the reason the project exists — is:
+**Implemented**, and the reason the project exists.
 
 ```
-goal → understand → plan → select tools → execute → observe → evaluate
-     → continue or revise → structured final result
+goal → plan → execute → observe → evaluate → structured result
 ```
 
-Where it will live: `src/server/agent/` (reserved, not created). It belongs on the
-server because it orchestrates model calls and tool execution; the browser observes it.
+Lives in `src/server/agent/`, which is real rather than reserved:
 
-The engine will consume and produce the Phase 1 types in `src/types/agent.ts` —
-`Agent`, `AgentTask`, `TaskStatus`, `TaskStep`, `Tool`, `ToolExecution`, `AgentResult`.
-Those types were defined first, deliberately, so the engine is written against a stable
-vocabulary instead of inventing one mid-implementation.
+```
+provider/     ModelProvider interface, the development adapter, a scripted test one
+planner/      objective → validated plan (Zod, plus a dependency-graph check)
+executor/     walks the plan, records observations, resolves tools
+evaluator/    computes the verdict, requests a narrative
+runtime/      state builder, append-only event log, process-local store, the runner
+errors.ts     AgentEngineError — an engine failure with a machine-readable code
+```
 
-**The evaluate step is a first-class stage**, not a retry wrapper. Orion is intended to
-judge whether a result answers the objective, and revise the plan when it does not.
+**The lifecycle is assembled in one place** — `runtime/runner.ts`. Every stage below it
+is independently testable and knows nothing about the others; the runner is the only
+module that has to know the whole shape of a run.
+
+**The runner never throws.** A failed run is a returned execution with
+`status: "failed"` and structured errors attached, because a caller needs the partial
+results of a run that went wrong far more than it needs an exception.
+
+**One failed step does not abort the run.** Steps depending on it are skipped, since
+running them would mean running them against input that does not exist; independent
+branches continue. A run therefore produces as much as it honestly can, and reports
+exactly which step failed and why.
+
+**The verdict is computed, not generated.** `evaluation` decides `completed` or
+`failed` deterministically from what the steps actually did. A model is asked only for
+the narrative. This is what stops model output from having the authority to mark work
+complete — the same rule §3 applies to clients.
+
+**What the engine does not do yet.** It runs a plan **once**. Evaluation reports; it
+does not revise the plan and re-run it, so `iteration_limit_reached` exists in the
+error vocabulary with nothing that can raise it. Bounded execution, cost ceilings and
+plan revision arrive with the phases that need them. There is also no scheduler and no
+background worker: a run completes inside the request that started it.
+
+The engine consumes and produces the Phase 1 types in `src/types/agent.ts`, which
+Phase 3 extended rather than replaced — `ExecutionState`, `Observation`, `AgentEvent`,
+`AgentExecution`, `StepStatus` and `ExecutionStatus` were added; nothing was removed.
 
 ## 6. Model abstraction
 
-**Not implemented.** No provider SDK is a dependency and no provider is hard-coded.
-
-The model layer will be configuration, not code — the same discipline already applied
-to the database. `.env.example` already reserves provider-neutral names:
+**The interface is implemented. No external provider is.** The only adapter that exists
+is deterministic and local; no vendor SDK is a dependency and no vendor is named in the
+engine.
 
 ```
+src/server/agent/provider/provider.ts       the interface, request/response, JSON parsing
+src/server/agent/provider/dev-provider.ts   the deterministic development adapter
+src/server/agent/provider/stub-provider.ts  a scripted adapter, for tests
+src/server/agent/provider/index.ts          resolveModelProvider() — the one place a
+                                            concrete provider is named
+```
+
+The engine talks to `ModelProvider` and knows nothing else: not a wire format, not a
+vendor's message shape, not a base URL. `ModelProvider` has three independent
+implementations of the same interface, which is the practical evidence that the seam is
+real rather than intended.
+
+**The development adapter is a stand-in, and says so.** It performs no inference and
+contacts nothing; its plan is a fixed analytical skeleton parameterised by the objective
+text. It is never presented as AI output — `isExternal` is `false`, and every execution
+carries its provider descriptor so the workspace can state which one ran.
+
+**Resolution does not fall back.** If `ORION_LLM_PROVIDER` names a provider Orion does
+not implement, `getModelProviderConfig` throws and the run fails loudly. Quietly running
+the development adapter while an operator believes a real model is configured would make
+every downstream result a lie.
+
+**The credential never leaves `src/lib/env.ts`.** `getModelProviderConfig` reads
+`ORION_LLM_API_KEY` *only* to compute a `hasApiKey` boolean and never returns the value,
+so no code path can place it in a response body, an error message or a log line. §10's
+one-reader rule is what makes this enforceable rather than aspirational.
+
+`.env.example` carries the provider-neutral names, now live rather than reserved:
+
+```
+ORION_LLM_PROVIDER=   # "dev" (default). Any other value fails loudly.
 ORION_LLM_API_KEY=
 ORION_LLM_MODEL=
 ORION_LLM_BASE_URL=
 ```
 
-These are commented out because nothing reads them yet; they are listed so the names
-are not invented ad hoc later.
-
-**The engine talks to an interface, not a vendor.** The intended shape is a single
-`ModelProvider` interface — given a prompt and a tool catalogue, return either text or
-a tool call — with per-vendor adapters behind it. Selecting a provider is then an
-environment change, not a code change.
-
-**Why this is constrained now:** coupling the engine to one vendor's SDK, message
-format, and tool-call schema is the most expensive mistake available in this project,
-because it leaks into the planner, the executor, and every tool. The rule for Phase 1
-is simply that no such dependency may be introduced.
+**Still absent:** a real external adapter. Adding one means adding a module under
+`provider/` and a case in `resolveModelProvider` — a change to two files, which is the
+test of whether this section's claims hold.
 
 ## 7. Tool system
 
-**Not implemented.** No tool registry, no tool runtime, no built-in tools.
+**The seam is implemented and the registry is empty.** No tool exists, and none is
+stubbed.
 
-A tool is intended to be a named capability the agent may select: a description, an
-input schema, and an execution function. The `Tool` type in `src/types/agent.ts` is
-deliberately loose (`inputSchema` is a `Record<string, unknown>` in Phase 1) because
-nothing consumes it yet and a premature schema would be guessed rather than derived.
+`src/server/agent/executor/registry.ts` defines the `AgentTool` interface and a
+`ToolRegistry` with `register`, `resolve` and `list`. `createToolRegistry()` returns it
+empty, always.
 
-Two intended constraints, recorded now because they shape the design:
+That emptiness is the point, not an omission. The engine's behaviour when a plan asks
+for a capability the runtime cannot supply is real behaviour that has to work: the step
+fails with `capability_unavailable`, the dependent steps are skipped, and the run
+reports exactly that. The planner requests `web.search` for objectives that ask for
+external information, and the honest answer it gets back is "not available in this
+build" — never invented findings. Building the tool ecosystem is a later phase.
+
+Two constraints recorded when this was only a plan, both still the intent:
 
 - **Tools are declared, not hard-coded into the planner.** The planner selects from a
-  registry; adding a tool must not mean editing the planning logic.
-- **Tool execution is recorded.** `ToolExecution` exists so a run can be explained
-  after the fact — what was called, with what input, and what came back.
+  registry; adding a tool must not mean editing the planning logic. The registry is what
+  makes that true, and nothing in the planner names a tool.
+- **Tool execution is recorded.** `ToolExecution` exists so a run can be explained after
+  the fact. Nothing writes one yet, so it remains Phase 1 vocabulary awaiting a producer.
 
-## 8. Future memory/state layer
+**Still absent:** every actual tool, input schemas for them, and a tool runtime that
+executes more than one call per step.
 
-**Not implemented.** No retrieval, no persistence between runs.
+## 8. Memory and state
 
-Phase 1 holds no agent state at all: the workspace collects an objective and stops.
-The distinction the later design must respect:
+**Task state exists. Long-term memory does not.**
 
-- **Task state** — the live status of a run (status, steps, executions). This is
-  `AgentTask` and friends, and is what the workspace will observe.
+The distinction the design has to respect, and now does:
+
+- **Task state** — the live status of a run. This is `ExecutionState` plus the task,
+  steps and observations around it. **Implemented**, in `ExecutionStateBuilder` and the
+  event log.
 - **Long-term memory** — what Orion retains across runs so it does not rediscover the
-  same things. This has no representation in Phase 1, and it should not be conflated
-  with task state.
+  same things. **Not implemented**, and it has no representation in the codebase. It
+  must not be conflated with task state, and nothing in `ExecutionState` should be
+  reused as though it were memory.
 
-Both will live in PostgreSQL behind services, not in the client and not in process
-memory, so a run survives a restart.
+**Both are meant to live in PostgreSQL behind services.** Task state currently does
+not — see §10 for the deviation, and `src/server/agent/runtime/store.ts` for why.
+
+Structured failures are state too: `AgentExecution.errors` carries machine-readable
+codes so a consumer can branch on the kind of failure without parsing prose.
 
 ## 9. Testing strategy
 
 Vitest, `node` environment, no globals — tests import `describe`/`it`/`expect`
-explicitly. The `@/` path alias resolves in tests via `vitest.config.ts`.
+explicitly. The `@/` path alias resolves in tests via `vitest.config.ts`. Tests sit
+beside the code they cover.
 
-Coverage is deliberately small and covers **only code that exists**: objective
-validation, and the service behind `/api/health`. There is no component-render layer
-and no end-to-end layer yet.
+The engine is tested at two levels, and the split is deliberate:
+
+- **Units** — plan validation (schema and dependency graph), the development adapter's
+  determinism, error conversion, the store's bound. Each asserts one rule.
+- **Integration** — `runtime/runner.test.ts` drives the whole lifecycle against a
+  scripted provider: cancellation, a failing step, an unavailable capability, a
+  registered tool, planner failure, provider misconfiguration. These are the tests that
+  would catch a broken seam, because the scripted provider is a *different
+  implementation* of `ModelProvider` from the development one — the engine cannot tell
+  which it is talking to, which is exactly the property being verified.
 
 The convention that matters as the project grows:
 
 - **Services are the natural unit of test.** They are framework-free by design, so
   they test without a request, a database, or a rendered tree.
-- **External calls get mocked at the boundary.** No test should require network access
-  or a live Supabase project.
+- **External calls get mocked at the boundary.** No test requires network access, a live
+  Supabase project, or a live model credential — the engine's tests run with no API key
+  present at all, which is the only way to know they are not quietly depending on one.
 - **Do not write tests ahead of the implementation.** A test for a phase that has not
   been built asserts a design that does not exist yet and will be rewritten.
+- **A test that mocks the thing under test proves nothing.** Provider calls are scripted
+  so that the planner, executor and evaluator run for real; none of them is mocked.
+
+There is still no component-render layer and no end-to-end browser layer, so CSS,
+layout and client interactivity remain unverified by tests.
 
 Run `npm run typecheck && npm test && npm run build` before pushing (see
 `DEVELOPMENT_PHASES.md` §Gates).
@@ -218,5 +302,33 @@ Consequences the design already respects:
 - **The model provider must be swappable per environment**, which is the practical
   reason §6 forbids a hard-coded vendor: the deployment target and the model vendor
   should be independent decisions.
+
+### Known deviation: the execution store
+
+`src/server/agent/runtime/store.ts` is a process-local `Map`, and **it violates the
+second rule above**. This is recorded rather than glossed over.
+
+The reason is that there is nowhere else to put it. The persistence phase has not been
+built, and Phase 3 was scoped to the engine rather than to storage; the alternative was
+to build a database, which is different work.
+
+The consequences, stated plainly:
+
+- A stored execution is visible only from the process that ran it. It does not survive
+  a restart and is not shared between instances.
+- On a serverless deployment, a later request may reach an instance that has never heard
+  of the execution it is asking about. Those reads return `404` rather than
+  reconstructing an answer, because reconstructing one would mean inventing it.
+- Retention is bounded to 50 executions, oldest evicted first, so the worst case is a
+  bounded amount of memory rather than a leak.
+
+**Execution itself does not depend on the store.** A run completes inside the request
+that started it and returns its full state, events and result in the response. The store
+exists only so a recent run can be looked up again. Losing it degrades convenience, not
+correctness.
+
+Replacing it with a real repository is the intended fix. Its surface is three functions
+with no callers reaching past them and no engine module importing it, so the swap is
+contained.
 
 No CI workflow exists yet. No deployment configuration is committed yet.
