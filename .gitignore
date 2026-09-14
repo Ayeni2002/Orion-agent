@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+demo/sample_run.md
