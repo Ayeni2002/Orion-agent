@@ -12,14 +12,19 @@ import {
 /**
  * Objective capture for the workspace.
  *
- * Phase 1 stops at validation. There is no planner, no tool runtime, no model
- * call and no persistence — submitting says so plainly rather than showing a
- * progress indicator for work that is not happening. The Zod schema is real
- * and shared, so the same rules will apply when the run endpoint exists.
+ * Validation is real — it runs the same Zod schema the run endpoint will use,
+ * and it is the only part of this form that does anything. Submission does not
+ * call a model, start a task or store anything, and the notice says so rather
+ * than showing progress for work that is not happening.
+ *
+ * The project selector is present but disabled: there are no projects to select
+ * because nothing persists yet, and an enabled control that silently discarded
+ * the choice would be worse than one that admits it is not ready.
  */
 export function ObjectiveForm() {
   const fieldId = useId();
   const errorId = `${fieldId}-error`;
+  const projectId = `${fieldId}-project`;
 
   const [objective, setObjective] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -32,18 +37,20 @@ export function ObjectiveForm() {
     const parsed = objectiveSchema.safeParse({ objective });
 
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "That objective is not valid.");
+      setError(
+        parsed.error.issues[0]?.message ?? "That objective is not valid.",
+      );
       return;
     }
 
     setError(null);
     setNotice(
-      "Objective captured. The agent engine is not implemented yet — Phase 1 establishes the foundation only, so nothing was sent or stored.",
+      "Objective validated. Orion's agent engine is not implemented yet, so nothing was planned, executed or stored — that arrives with the next phase.",
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="space-y-4">
+    <form onSubmit={handleSubmit} noValidate className="space-y-6">
       <div className="space-y-2">
         <div className="flex items-baseline justify-between gap-4">
           <label htmlFor={fieldId} className="text-sm font-medium">
@@ -62,7 +69,7 @@ export function ObjectiveForm() {
           placeholder="e.g. Compare the leading approaches to grid-scale storage and report the trade-offs."
           aria-invalid={error !== null}
           aria-describedby={error !== null ? errorId : undefined}
-          className="min-h-32"
+          className="min-h-40"
         />
 
         {error !== null ? (
@@ -72,7 +79,35 @@ export function ObjectiveForm() {
         ) : null}
       </div>
 
-      <Button type="submit">Start Agent</Button>
+      <div className="space-y-2">
+        <label htmlFor={projectId} className="text-sm font-medium">
+          Project <span className="text-muted-foreground">(optional)</span>
+        </label>
+
+        <select
+          id={projectId}
+          name="project"
+          disabled
+          aria-describedby={`${projectId}-hint`}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <option value="">No projects available</option>
+        </select>
+
+        <p id={`${projectId}-hint`} className="text-xs text-muted-foreground">
+          Projects cannot be assigned yet — creating one does not persist until a
+          later phase.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Button type="submit">Start Agent</Button>
+
+        <p className="text-xs text-muted-foreground">
+          Agent execution is not implemented. This validates your objective and
+          stops.
+        </p>
+      </div>
 
       <div aria-live="polite">
         {notice !== null ? (

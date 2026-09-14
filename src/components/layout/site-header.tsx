@@ -3,10 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { isNavItemActive } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
-  { href: "/", label: "Home" },
+/**
+ * The two links worth surfacing on the public page.
+ *
+ * Named to avoid colliding with `NAV_ITEMS` in `src/lib/navigation.ts` — that
+ * is the full application navigation, this is a subset shown to visitors.
+ */
+const PUBLIC_NAV_ITEMS = [
+  { href: "/overview", label: "Overview" },
   { href: "/workspace", label: "Workspace" },
 ] as const;
 
@@ -27,11 +34,8 @@ export function SiteHeader() {
         </Link>
 
         <nav aria-label="Main" className="flex items-center gap-1">
-          {NAV_ITEMS.map((item) => {
-            const isActive =
-              item.href === "/"
-                ? pathname === "/"
-                : pathname.startsWith(item.href);
+          {PUBLIC_NAV_ITEMS.map((item) => {
+            const isActive = isNavItemActive(item.href, pathname);
 
             return (
               <Link

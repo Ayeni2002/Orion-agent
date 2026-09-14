@@ -1,27 +1,32 @@
 import type { ReactNode } from "react";
 
-import { SiteHeader } from "@/components/layout/site-header";
+import { AppSidebar } from "@/components/layout/app-sidebar";
+import { MobileNav } from "@/components/layout/mobile-nav";
 
 /**
- * Application chrome shared by every route: navigation, a flexible main
- * content area, and a footer. Route groups that later need a different frame
- * (for example a full-bleed workspace) should add their own layout rather than
- * growing conditionals here.
+ * The application frame: sidebar on desktop, disclosure menu on mobile, and a
+ * main content area between them.
+ *
+ * This is the single shell for every authenticated-style route. It is applied
+ * by `src/app/(app)/layout.tsx` rather than by the root layout, because the
+ * landing page at `/` is a marketing surface and should not carry app chrome.
+ *
+ * A route that later needs a genuinely different frame (a full-bleed workspace,
+ * say) should add its own layout inside the group rather than grow conditionals
+ * here.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-svh flex-col">
-      <SiteHeader />
+    <div className="flex min-h-svh flex-col lg:flex-row">
+      <AppSidebar />
 
-      <main id="main" className="flex-1">
-        {children}
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <MobileNav />
 
-      <footer className="border-t border-border">
-        <div className="mx-auto w-full max-w-5xl px-4 py-6 text-xs text-muted-foreground sm:px-6">
-          Orion — Phase 1 foundation. The agent engine is not implemented yet.
-        </div>
-      </footer>
+        <main id="main" className="flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-10">
+          <div className="mx-auto w-full max-w-6xl">{children}</div>
+        </main>
+      </div>
     </div>
   );
 }

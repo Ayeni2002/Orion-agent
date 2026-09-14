@@ -12,10 +12,14 @@ next-env.d.ts
 build/
 dist/
 
-# environment — never commit real values
+# environment — never commit real values.
+# Ignore every .env* variant rather than a list of known ones: Next.js reads
+# .env.development, .env.production and .env.test too, and an enumerated list
+# silently misses whichever one is added next. .env.example is the documented
+# template and stays committed.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # testing
 coverage/
