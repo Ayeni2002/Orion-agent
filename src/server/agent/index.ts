@@ -16,7 +16,7 @@
 export { AGENT_ID, runAgent } from "./runtime/runner";
 export type { RunAgentParams } from "./runtime/runner";
 
-export { resolveModelProvider } from "./provider";
+export { parseModelJson, resolveModelProvider } from "./provider";
 export type {
   ModelOperation,
   ModelProvider,
@@ -30,6 +30,7 @@ export {
   DEFAULT_TOOL_PERMISSION,
   defineTool,
   MAX_ANALYSIS_CHARACTERS,
+  receiptError,
   TEXT_ANALYSIS_TOOL_ID,
   TEXT_ANALYSIS_TOOL_VERSION,
   textAnalysisTool,
@@ -54,3 +55,29 @@ export {
   listExecutions,
   saveExecution,
 } from "./runtime/store";
+
+/**
+ * Primitives the research subsystem reuses rather than reimplementing.
+ *
+ * Phase 5 asked for a second kind of run — research — and the temptation with a
+ * second run is a second copy of the things every run needs: an id scheme, a
+ * clock, an event log, a state builder, a JSON parser for model output. §26 of
+ * the Phase 5 brief rules that out, and these exports are how it is ruled out
+ * concretely: `src/server/research/` imports these four and defines none of its
+ * own.
+ *
+ * They are exported from the barrel rather than reached for by deep path
+ * because the rule this file states applies to research as much as to any other
+ * caller — the engine's internal layout stays free to change only if nothing
+ * outside it has baked that layout in.
+ *
+ * `EventLog` and `ExecutionStateBuilder` are the two that matter most. A
+ * research run emits the same `AgentEvent`s an agent run does and tracks state
+ * through the same builder, so the workspace follows either with the same
+ * component and there is exactly one answer to "how does a run report
+ * progress?".
+ */
+export { createId, now } from "./ids";
+export { EventLog } from "./runtime/events";
+export type { EventSink } from "./runtime/events";
+export { ExecutionStateBuilder } from "./runtime/state";

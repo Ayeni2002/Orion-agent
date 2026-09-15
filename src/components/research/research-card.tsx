@@ -9,10 +9,13 @@ import {
 } from "@/components/ui/card";
 
 /**
- * A research item in a list — a finding Orion gathered.
+ * A research run in a list — a question Orion was asked, and what came of it.
  *
- * Presentational only, for the same reason as `ProjectCard`: no research is
- * gathered yet, so there is no domain shape to commit to.
+ * Still presentational only, and still taking strings rather than a
+ * `ResearchSummary`: the card renders whatever it is handed and knows nothing
+ * about how a run is produced. Phase 5 gave it a real caller — the recent list
+ * on the research page maps `ResearchSummary` onto these props — so its shape is
+ * now exercised by data rather than only by the empty list it shipped beside.
  */
 export interface ResearchCardProps {
   title: string;

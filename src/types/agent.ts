@@ -26,6 +26,13 @@
  * schemas and therefore cannot live in this file: everything here must be
  * serializable, and a function or a `ZodType` is not.
  *
+ * Phase 5 added the research vocabulary in `src/types/research.ts`, beside this
+ * file rather than inside it. The two types research needed from here —
+ * `Observation` and `ExecutionProvider` — are imported rather than copied, so a
+ * research run and an agent run cannot drift into two spellings of the same
+ * idea. Only the nouns research adds are new, and they are new in their own
+ * file.
+ *
  * Every type in this file is serializable by construction. That is a hard
  * requirement, not a style preference: execution state crosses the HTTP
  * boundary and is written to logs, and a `Map`, `Set` or class instance would
@@ -280,6 +287,26 @@ export interface Observation {
  * `capability_unavailable`, which already means exactly it and is already
  * covered by the engine's tests. A second code for the same condition would be
  * two contracts for one fact.
+ *
+ * Phase 5 added two more, and only after checking that nothing existing meant
+ * them. `search_not_configured` is not `capability_unavailable`: the latter says
+ * this build has no such tool, and the former says it has one that cannot run
+ * until an operator sets a variable. Those are fixed by different people, which
+ * is the test for whether a code is warranted. `research_limit_reached` is not
+ * `iteration_limit_reached` for the same reason — one counts passes through a
+ * loop, the other counts sources, findings and elapsed time, and a run can reach
+ * either without approaching the other.
+ *
+ * **`research_limit_reached` currently has no producer, and that is recorded
+ * rather than hidden.** A limit that was reached travels to the caller on
+ * `ResearchResult.limitsReached`, as a `ResearchLimitKind`, because reaching a
+ * ceiling is not a failure: the run returns what it found and is reported
+ * `insufficient` rather than `failed`. Putting the same fact in `errors` as well
+ * would give one condition two representations and make a partial success look
+ * like a malfunction. The code stays declared for a consumer that needs to treat
+ * a limit as an error — a batch or scheduled runner, which would want to retry
+ * with a higher ceiling — and it will get its producer in the phase that adds
+ * one. Until then, nothing emits it, and no test asserts it.
  */
 export type AgentErrorCode =
   | "invalid_objective"
@@ -292,6 +319,8 @@ export type AgentErrorCode =
   | "tool_failed"
   | "evaluation_failed"
   | "iteration_limit_reached"
+  | "search_not_configured"
+  | "research_limit_reached"
   | "internal_error"
   | "cancelled";
 

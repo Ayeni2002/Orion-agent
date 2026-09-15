@@ -8,6 +8,11 @@ export default defineConfig({
     // via a `// @vitest-environment jsdom` docblock, not globally.
     environment: "node",
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Clears the provider environment before every test file, so the suite
+    // cannot inherit a configured endpoint from the shell it was run in. See
+    // the file — it is what makes "no test needs a credential" a property of
+    // the setup rather than of the machine.
+    setupFiles: ["./vitest.setup.ts"],
   },
   resolve: {
     alias: {

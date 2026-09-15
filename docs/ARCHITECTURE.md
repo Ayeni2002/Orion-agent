@@ -1,14 +1,20 @@
 # Orion — Architecture
 
-> **Status: Phase 4 (Tool system).** The agent engine exists and runs: it plans an
-> objective, executes the plan — calling real tools where a step names one —
-> evaluates the outcome and returns a structured result. What backs it is still
-> deliberately thin: a **deterministic development adapter** rather than a real
-> model, and a **catalogue holding exactly one tool**, a read-only text
-> measurement. So there is **no external research, browsing, scraping, or any
-> tool that reaches outside the process**. The database, memory and reports
-> described below under *future* **do not exist**. Sections record what is real
-> and what is not; nothing here claims a capability the code does not have.
+> **Status: Phase 5 (Research intelligence).** The agent engine exists and runs: it
+> plans an objective, executes the plan — calling real tools where a step names one —
+> evaluates the outcome and returns a structured result. Above it, a research layer
+> takes a question, plans retrieval tasks, searches, deduplicates, reads findings
+> with the passage each claim rests on, and returns the evidence.
+>
+> What backs the engine out of the box is still deliberately thin: a
+> **deterministic development adapter** rather than a real model, and a **catalogue
+> holding exactly one tool**, a read-only text measurement. **Retrieval is real when
+> configured** — point `LLM_ENDPOINT` at OpenRouter and `research.search` reaches its
+> web-search plugin — and reports itself as unconfigured everywhere else, so a run
+> stops with `search_not_configured` rather than appearing to search. The database,
+> memory and reports described below under *future* **do not exist**. Sections record
+> what is real and what is not; nothing here claims a capability the code does not
+> have.
 >
 > Read this alongside [`DEVELOPMENT_PHASES.md`](./DEVELOPMENT_PHASES.md), which says
 > which phase builds which part, and [`TOOL_SYSTEM.md`](./TOOL_SYSTEM.md), which is
@@ -401,3 +407,92 @@ with no callers reaching past them and no engine module importing it, so the swa
 contained.
 
 No CI workflow exists yet. No deployment configuration is committed yet.
+
+## 11. Research subsystem
+
+**A layer on top of the engine, not a second engine.** This section is numbered 11 rather
+than inserted after §7 because other documents refer to the existing sections by number,
+and renumbering them to make room would break those references for no gain. The
+dependency order is: §5 engine → §7 tools → here.
+
+§26 of the Phase 5 brief forbids re-implementing anything Phase 3 or Phase 4 already
+provides, so the import list *is* the design:
+
+| Research needs | Comes from | Not built here |
+| --- | --- | --- |
+| Planning a question into tasks | `ModelProvider`, `parseModelJson` | a second model client |
+| Calling retrieval | `ToolExecutor`, `ToolRegistry`, `ToolPermission` | a second tool pipeline |
+| Progress and state | `EventLog`, `ExecutionStateBuilder` | a second event or state system |
+| Structured failure | `AgentExecutionError`, `toAgentExecutionError` | a second error vocabulary |
+| Identifiers | `createId` | a second id scheme |
+
+**The shape, in one pass.** A question goes in. The planner turns it into Zod-validated
+retrieval tasks. Each task calls one tool through the Phase 4 executor, which checks the
+run's permission, validates the input, calls the `ResearchProvider` behind the tool, and
+returns a receipt. Retrieved sources are normalised, deduplicated, and the model provider
+is asked what they establish — quoting them. A deterministic evaluator judges whether
+that is enough, and everything comes back as one `ResearchRecord`.
+
+Four decisions are worth stating because they are the ones a reader would otherwise have
+to infer.
+
+**A finding is a claim plus a quote.** §12 forbids inventing facts the sources do not
+support, and prose cannot enforce that, so `ResearchFinding` carries the passage it rests
+on and `verifyQuote` checks it against the retrieved text — normalised for NFKC, folded
+for typographic variants, whitespace collapsed, lowercased. A quote that does not verify
+downgrades the finding to `basis: "model"` and strips its evidence rather than rejecting
+the claim. The claim is kept and labelled, which is more useful than losing it and more
+honest than pretending it was sourced.
+
+**Evidence is the link, and the link must not break.** `Source → Evidence → Finding` is
+enforced by an alias map: when a duplicate URL is collapsed, citations of the discarded
+id are rewritten to the kept one. Without it, deduplication would silently orphan
+findings — the run would report evidence for a source it no longer holds, and the
+traceability §13 requires would be quietly false.
+
+**The one widened tool grant lives in one file.** `research/permission.ts` holds
+`RESEARCH_TOOL_PERMISSION = ToolPermission.only("read_only", "network")`.
+`DEFAULT_TOOL_PERMISSION` is unchanged at `read_only`, so every agent run, every test
+that constructs an executor without arguments, and `/api/tools` report exactly what they
+reported in Phase 4. Research reaches the network by constructing an executor with the
+widened grant, which is a visible act in one place rather than a default nobody sees.
+
+**`resolveResearchProvider()` names one host, deliberately.** It returns the web-search
+adapter when `LLM_ENDPOINT` is on `openrouter.ai`, and the development adapter otherwise
+— including for every other OpenAI-compatible endpoint. The narrowness is the design, not
+a missing case: `LLM_API_STYLE=openai` covers Groq, Together, vLLM, LM Studio and OpenAI
+itself, all of which speak `/chat/completions` and none of which has a `web` plugin. A
+plugin sent to one of those would be dropped, the model would answer from its own weights,
+and the run would be configured, would be reached, and would retrieve nothing. So the
+endpoint decides, `isConfigured` follows, and a run against anything else stops at
+`search_not_configured` with a message naming what to change.
+
+**Two properties make the adapter safe without a verified live call.** It never reads the
+model's prose — only `url_citation` annotations become sources — so an endpoint that
+ignores the plugin cannot put generated text, or a URL inside generated text, into a
+finding as though it were retrieved. And a response carrying no citations reports
+`performedRetrieval: false`, because "found nothing" and "never looked" are
+indistinguishable from the client and only one of those readings can fabricate evidence.
+Both are asserted in `research/provider/openrouter-search-provider.test.ts`.
+
+**Security.** Orion does not dereference a source URL in this phase, so `url-safety.ts`
+is a recording and rendering guard rather than a fetcher's guard. It rejects dangerous
+schemes, credentials in the authority, and internal or private destinations — including
+loopback, RFC 1918, link-local, CGNAT, IPv6 unique-local and link-local, and the
+alternative encodings that reach the same addresses (`2130706433`, `0x7f.1`, `127.1`,
+`[::ffff:127.0.0.1]`). The order is load-bearing: the URL is parsed by `new URL` *before*
+it is inspected, so a parser and a checker cannot disagree about what a string means. A
+rejected URL is counted and dropped, never repaired, because a stripped credential is
+still a source nobody should have been sent to. See `docs/RESEARCH.md` §Security.
+
+**A second known deviation, of the same kind as §10.** `research/store.ts` is a
+process-local `Map` with a 20-record bound, for exactly the reasons §10 records: the
+persistence phase has not been built. It is a container, not a second state system — a
+run's progress goes through `ExecutionStateBuilder` and `EventLog`. A read that misses
+returns `404` rather than reconstructing a record, because reconstructing one would mean
+inventing research nobody carried out.
+
+**What is deliberately absent.** No long-term memory, no vector store, no embeddings, no
+scheduled or background runs, and no cross-run cache of retrieved sources. §20 requires
+that, and it is also what keeps a research run's result reproducible from its own record.
+

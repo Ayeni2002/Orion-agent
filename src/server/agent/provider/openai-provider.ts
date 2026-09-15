@@ -1,5 +1,12 @@
 import { readModelApiKey } from "@/lib/env";
 import {
+  describeHttpFailure,
+  describeTransportFailure,
+  isRecord,
+  readJsonResponse,
+} from "@/server/transport";
+
+import {
   ModelProviderError,
   type ModelProvider,
   type ModelProviderDescriptor,
@@ -34,6 +41,16 @@ import {
 export const OPENAI_STYLE_PROVIDER_ID = "openai-compatible";
 
 /**
+ * What this adapter calls its far end in an error message.
+ *
+ * Passed to the shared transport helpers in `@/server/transport`, which build
+ * every failure string from it. The research adapter passes a different noun, so
+ * an operator reading "the search endpoint" knows which of a run's two remote
+ * calls failed rather than having to infer it from which subsystem logged.
+ */
+const NOUN = "model endpoint";
+
+/**
  * How long a single model call may take.
  *
  * The engine has no timeout support to hook into — Phase 4 recorded the same
@@ -42,9 +59,6 @@ export const OPENAI_STYLE_PROVIDER_ID = "openai-compatible";
  * which §22 of the brief rules out.
  */
 export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
-
-/** A ceiling on the error body read back from a failed call. */
-const MAX_ERROR_BODY_CHARACTERS = 2_048;
 
 export interface OpenAiCompatibleProviderConfig {
   /** Base URL, without the `/chat/completions` suffix. */
@@ -99,20 +113,24 @@ export function createOpenAiCompatibleProvider(
         // request that produced it, and that request has the header on it.
         throw new ModelProviderError(
           OPENAI_STYLE_PROVIDER_ID,
-          describeTransportFailure(error, timeoutMs),
+          describeTransportFailure(error, timeoutMs, NOUN),
         );
       }
 
       if (!response.ok) {
         throw new ModelProviderError(
           OPENAI_STYLE_PROVIDER_ID,
-          await describeHttpFailure(response),
+          await describeHttpFailure(response, NOUN),
         );
       }
 
-      const payload = await readJsonBody(response);
+      const body = await readJsonResponse(response, NOUN);
 
-      return toProviderResponse(payload, config.model);
+      if (!body.ok) {
+        throw new ModelProviderError(OPENAI_STYLE_PROVIDER_ID, body.message);
+      }
+
+      return toProviderResponse(body.value, config.model);
     },
   };
 }
@@ -184,20 +202,25 @@ function describeOperation(operation: ModelProviderRequest["operation"]): string
         "Assess what the run actually produced and state plainly what could not " +
         "be established. Reply with JSON only."
       );
-  }
-}
 
-/** Parses the response body, treating the whole thing as untrusted input. */
-async function readJsonBody(response: Response): Promise<unknown> {
-  const text = await response.text();
+    case "research_plan":
+      return (
+        "You are the research planning component of Orion. Break the research " +
+        "question you are given into the distinct things that must be " +
+        "established to answer it, and for each one give the search query most " +
+        "likely to find sources that establish it. Reply with JSON only. Do not " +
+        "answer the question yourself and do not state any fact about it."
+      );
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new ModelProviderError(
-      OPENAI_STYLE_PROVIDER_ID,
-      "The model endpoint returned a response that was not JSON.",
-    );
+    case "research_findings":
+      return (
+        "You are the finding extraction component of Orion. You are given a " +
+        "research question and the text of sources retrieved for it. State only " +
+        "what those sources actually say, and support every claim with a verbatim " +
+        "quote from the source you cite. If the sources do not establish " +
+        "something, say so rather than filling the gap. Reply with JSON only. " +
+        "Never state a fact that is not present in the sources you were given."
+      );
   }
 }
 
@@ -296,92 +319,6 @@ function readTokenCount(value: unknown): number | undefined {
     : undefined;
 }
 
-/**
- * A transport failure, described without repeating it.
- *
- * A `fetch` rejection on a POST can carry the request, and the request has the
- * `Authorization` header on it. The message therefore names the *kind* of
- * failure and never interpolates the underlying error.
- */
-function describeTransportFailure(error: unknown, timeoutMs: number): string {
-  if (error instanceof Error && error.name === "TimeoutError") {
-    return `The model endpoint did not respond within ${timeoutMs}ms.`;
-  }
-
-  if (error instanceof Error && error.name === "AbortError") {
-    return "The request to the model endpoint was aborted.";
-  }
-
-  return "The model endpoint could not be reached.";
-}
-
-/**
- * An HTTP failure, described using only what is safe to repeat.
- *
- * The provider's own `error.message` is the useful part — "insufficient
- * credits" is actionable where "402" is not — so it is read when present. The
- * status line and headers are not included, because a proxy or gateway can echo
- * the request in either. The snippet is capped so an HTML error page cannot
- * become the error message.
- */
-async function describeHttpFailure(response: Response): Promise<string> {
-  const status = `${response.status} ${response.statusText}`.trim();
-  const detail = await readUpstreamErrorMessage(response);
-
-  return detail === undefined
-    ? `The model endpoint returned ${status}.`
-    : `The model endpoint returned ${status}: ${detail}`;
-}
-
-async function readUpstreamErrorMessage(
-  response: Response,
-): Promise<string | undefined> {
-  let body: string;
-
-  try {
-    body = await response.text();
-  } catch {
-    return undefined;
-  }
-
-  if (body.length === 0) {
-    return undefined;
-  }
-
-  const message = extractErrorMessage(body);
-
-  if (message === undefined) {
-    return undefined;
-  }
-
-  const collapsed = message.replace(/\s+/g, " ").trim();
-
-  if (collapsed.length === 0) {
-    return undefined;
-  }
-
-  return collapsed.length > MAX_ERROR_BODY_CHARACTERS
-    ? `${collapsed.slice(0, MAX_ERROR_BODY_CHARACTERS)}…`
-    : collapsed;
-}
-
-/** Reads `error.message` from a JSON error body, when there is one. */
-function extractErrorMessage(body: string): string | undefined {
-  try {
-    const parsed: unknown = JSON.parse(body);
-
-    if (isRecord(parsed) && isRecord(parsed.error)) {
-      const message = parsed.error.message;
-      return typeof message === "string" ? message : undefined;
-    }
-  } catch {
-    // Not JSON. An upstream that returns HTML on failure has nothing worth
-    // repeating and possibly plenty worth withholding, so nothing is returned.
-  }
-
-  return undefined;
-}
-
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
@@ -393,8 +330,4 @@ function safeStringify(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

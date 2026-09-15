@@ -17,8 +17,9 @@ shape of the parts marked *not implemented* here.
 | 2 | Application shell | **Complete** |
 | 3 | Agent engine | **Complete** |
 | 4 | Tool system | **Complete** |
-| 5 | Database & persistence | Not started |
-| 6 | Real model provider | Not started |
+| 5 | Research intelligence | **Complete** |
+| 5R | Database & persistence | Not started — was roadmapped as Phase 5 |
+| 6 | Real model provider | Partly delivered by Phase 5; see below |
 | 7 | Memory & state | Not started |
 | 8 | Reports & delivery | Not started |
 | 9 | Hardening & deployment | Not started |
@@ -41,7 +42,7 @@ Three consequences worth recording:
 
 - The original **Phase 3 (Model provider)** is split. The *interface*, its resolution,
   and a deterministic development adapter were built as part of Phase 3. A real external
-  adapter is Phase 6 and remains entirely unbuilt.
+  adapter arrived in Phase 5; see the note under Phase 6.
 - The original **Phase 4 (Tool system)** was built as Phase 4, against the registry seam
   Phase 3 left in place. That seam turned out to need *evolving* rather than filling:
   Phase 3's `AgentTool` and `executor/registry.ts` were replaced by the fuller
@@ -49,6 +50,30 @@ Three consequences worth recording:
   kept alongside. See the Phase 4 section for why.
 - The database moved after the engine. Task state is currently held in process memory,
   which `ARCHITECTURE.md` §10 records as a known deviation with its consequences.
+
+### Why Phase 5 is research, not the database
+
+The work in this phase was directed by a Phase 5 brief for a **research intelligence**
+layer, not by the roadmap's Phase 5. That is the third divergence in this document, and
+it is recorded rather than papered over.
+
+Two things are true at once and both belong here:
+
+- **The database did not get built.** Every deviation `ARCHITECTURE.md` §10 records is
+  still in force, and Phase 5 added a *second* instance of it — `research/store.ts` is
+  another process-local `Map`. Two stores now depend on a phase that has not happened.
+- **The roadmap's Phase 6 partly arrived early.** "Real model provider" was Phase 6, and
+  Phase 5 needed one: an OpenAI-compatible adapter now exists
+  (`agent/provider/openai-provider.ts`), is selected by `LLM_API_STYLE=openai`, and is
+  covered by tests. That is the roadmap's Phase 6 item, delivered as a dependency of
+  Phase 5 rather than as its own phase.
+
+What that leaves for Phase 6 is stated in that section. The practical consequence for
+Phase 5R is that its urgency went **up**, not down: there is now more in process memory
+than there was, and a serverless deployment loses all of it between requests.
+
+Phase 5R keeps the roadmap's original content unchanged. It is retitled rather than
+deleted because none of it was decided against — it was simply displaced.
 
 ---
 
@@ -208,7 +233,132 @@ implementation.
 
 ---
 
-## Phase 5 — Database & persistence
+## Phase 5 — Research intelligence ✅
+
+**Goal:** a question can be researched against real sources, and the result says what it
+is worth — with the plan, the sources, the findings, the evidence and the disagreements
+all traceable, and with nothing claimed that was not retrieved.
+
+Delivered:
+
+- **Research domain model** (`src/types/research.ts`) — `ResearchRequest`, `ResearchTask`,
+  `ResearchSource`, `ResearchFinding`, `ResearchEvidence`, `ResearchConflict`,
+  `ResearchResult`, `ResearchRecord`, `ResearchSummary`, `ResearchLimits`. JSON-safe
+  vocabulary only; the executable half lives beside its implementation, as Phase 4
+  established.
+- **A dedicated research service** (`src/server/research/`) — planner, search tool,
+  normaliser, finding extractor, evaluator, run loop, store and capability read. It is a
+  layer on the engine, not a second one: planning goes through the Phase 3
+  `ModelProvider`, retrieval through the Phase 4 `ToolExecutor`, progress through
+  `EventLog` and `ExecutionStateBuilder`, failures through `AgentExecutionError`, and ids
+  through `createId`. §26's boundary is enforced by the import list.
+- **A research provider abstraction** (`research/provider/`) — `ResearchProvider` with
+  `search`, a descriptor and `isConfigured`; a deterministic development adapter, a
+  scripted test stub, and one resolution point. `performedRetrieval` is carried rather
+  than inferred, so "searched and found nothing" is distinguishable from "did not search".
+- **A real web research tool** (`research.search`) — the only tool in Orion that declares
+  `network`. It vets every returned URL, re-derives the domain from the vetted URL,
+  canonicalises, clamps the result count, truncates with a visible marker, and counts
+  refusals separately from drops.
+- **Registered through the Phase 4 tool registry** — in a per-run registry, never in the
+  default catalogue, because the default is what `/api/tools` reports and what every
+  agent run resolves against. `web.search` remains unregistered, so Phase 3's
+  `capability_unavailable` path is still live behaviour.
+- **Read-only network permissions, denied by default** — `RESEARCH_TOOL_PERMISSION` in a
+  module of its own; `DEFAULT_TOOL_PERMISSION` unchanged. Permission is checked before
+  input validation, so a refused tool never consumes untrusted input.
+- **A research planner** — Zod-validated structured tasks rather than a paragraph, with a
+  restatement, per-task queries bounded by the search tool's own contract, and a
+  duplicate-query check that Zod cannot express. A plan that fails validation fails the
+  run before anything is retrieved.
+- **LLM integration through the existing `ModelProvider`** — two new operations,
+  `research_plan` and `research_findings`. Model output is untrusted at every hop, and
+  **the model never executes a tool**: it produces a plan and later finds words, and the
+  engine decides what to call.
+- **Free and development provider support** — `LLM_API_STYLE=dev` runs the whole path with
+  no credential and no network, and the record says so. `RESEARCH_SEARCH_MODEL` names a
+  cheaper retrieval model and is consumed by `resolveResearchProvider`; it defaults to
+  `LLM_MODEL`.
+- **A real retrieval adapter** — `research/provider/openrouter-search-provider.ts`, a chat
+  completion carrying OpenRouter's `web` plugin, whose `url_citation` annotations become
+  the run's sources. It is chosen only for an `LLM_ENDPOINT` on `openrouter.ai`; every
+  other OpenAI-compatible endpoint keeps the development adapter and stops at
+  `search_not_configured`, because it has no such plugin and a request carrying one would
+  be silently dropped. No test can confirm that a live account honours the plugin, so the
+  adapter is built so that a wrong guess fails safe: it never reads the model's prose, and
+  a response with no citations reports `performedRetrieval: false`. See
+  `docs/RESEARCH.md` → *Retrieval: the web-search adapter*.
+- **Source normalisation** — `new URL` first, then inspection, then canonicalisation, then
+  deduplication. Tracking parameters and fragments removed, parameters sorted, default
+  port dropped, unknown parameters kept.
+- **A finding and evidence system** — a claim plus `basis: "source" | "model"`, and the
+  `Finding → Evidence → Source → URL` chain. Every quote is verified against the
+  retrieved text after NFKC normalisation and typographic folding; a quote that does not
+  verify demotes its claim instead of being accepted.
+- **Deduplication within a run**, with an alias map that rewrites citations of a discarded
+  duplicate to the kept source, so dedup cannot silently orphan a finding.
+- **Conflicts recorded, never resolved** — the findings that disagree, the sources they
+  span, and a description. Nothing decides which side is right.
+- **A deterministic evaluator** — `sufficient`, `insufficient`, `conflicting` or `failed`,
+  from the recorded facts alone, with every shortfall named in the summary.
+- **Explicit, configurable limits** — five ceilings read from the environment, each
+  checked before the work it bounds, each recorded when reached, with the partial result
+  returned rather than discarded. A malformed limit throws instead of silently defaulting.
+- **`POST /api/research`** — a terminal record in the response, plus `GET /api/research`
+  for a summary list and `GET /api/research/capabilities` for what the build can do. A
+  run that found too little is a `201`, not a `500`.
+- **Workspace integration** — the `/research` page posts to the real endpoint and renders
+  what came back: the plan, each source with its URL, findings marked sourced or inferred,
+  the evidence behind each, recorded conflicts, the limits reached, and the event stream
+  read from the record rather than simulated.
+- **Documentation** — `docs/RESEARCH.md`, plus `ARCHITECTURE.md` §11 and the environment
+  template.
+- **Tests** — eleven new files covering URL safety, normalisation and dedup, the plan
+  contract, the finder's quote check, the search tool, the evaluator, the service loop,
+  the service layer, both API routes and the request schema, with the development
+  adapter's two research operations checked against the real consumers' schemas.
+
+**Real retrieval is written but unverified against the live service.** The web-search
+adapter (`research/provider/openrouter-search-provider.ts`) exists and is selected by
+`resolveResearchProvider()` whenever `LLM_ENDPOINT` points at openrouter.ai; every other
+endpoint, including the `dev` default, resolves to the unconfigured development adapter
+and stops at `search_not_configured` before planning. What no test establishes is that a
+live OpenRouter account returns citations for this request — see `docs/RESEARCH.md` →
+*Verifying it live* for the one `curl` that settles it. The design is built so that a
+wrong guess fails visibly (`performedRetrieval: false` and an `insufficient` result)
+rather than by presenting model prose as a retrieved source. Also absent: URL
+fetching (Orion records source URLs and never dereferences one), long-term memory, a
+vector store, embeddings, a cross-run source cache, background or scheduled runs, a
+cancel endpoint, tool-call timeouts, authentication or rate limiting on the research
+endpoints, report generation, and multi-agent behaviour.
+
+**Two changes to earlier phases, recorded rather than glossed over.** `AgentErrorCode`
+gained `search_not_configured`, and it was added only after checking that
+`capability_unavailable` did not already mean it — it does not, and the two are fixed by
+different people. `ModelOperation` gained the two research operations, which is an
+addition to Phase 3's provider interface rather than a change to it: the development
+adapter's existing `plan`, `execute_step` and `evaluate` cases are untouched.
+
+**Depends on Phases 3–4:** the provider interface and its resolution, the planner's
+untrusted-output discipline, the tool registry, the executor pipeline, the receipt, the
+permission model, the event log and the state builder. Phase 5 added a layer above them
+and changed none of them.
+
+**Depends on the environment for one thing only:** an `LLM_ENDPOINT` on OpenRouter, whose
+`web` plugin is what the retrieval adapter asks. That is configuration rather than code,
+so the adapter is written and the endpoint decides whether it runs; see `docs/RESEARCH.md`
+→ *Retrieval: the web-search adapter*. What no test establishes is that a given account
+and model honour the plugin — a test that reached the real endpoint would fail on a plane,
+in CI, and the day a key is rotated — which is why the adapter is built so that a wrong
+guess produces an honest `insufficient` rather than fabricated evidence.
+
+---
+
+## Phase 5R — Database & persistence
+
+> **Displaced, not cancelled.** This was Phase 5 in the original roadmap and is
+> unchanged below. The work that actually happened as Phase 5 is the section above. See
+> *Why Phase 5 is research, not the database*.
 
 **Goal:** the application has a schema, and something is actually stored.
 
@@ -219,10 +369,11 @@ implementation.
   alongside the migration — not deferred.
 - Authentication, since RLS policy requires an identity to key on.
 - The process-local execution store replaced by a repository behind the service. This
-  closes the deviation recorded in `ARCHITECTURE.md` §10.
+  closes the deviation recorded in `ARCHITECTURE.md` §10 — **and Phase 5 added a second
+  one**, `research/store.ts`, which this phase must also replace.
 
 **Depends on Phase 3:** there is now state worth persisting, and a bounded, swappable
-store to replace.
+store to replace. Phase 5 made that two stores rather than one.
 
 ---
 
@@ -230,12 +381,28 @@ store to replace.
 
 **Goal:** one real model call, behind the interface that already exists.
 
-- A concrete external adapter under `src/server/agent/provider/`, and a case for it in
-  `resolveModelProvider`. Two files, if §6 of the architecture document is accurate.
+> **Partly delivered by Phase 5.** The adapter exists:
+> `agent/provider/openai-provider.ts` implements the OpenAI-compatible
+> `/chat/completions` protocol, is selected by `LLM_API_STYLE=openai`, and is covered by
+> `provider/openai-provider.test.ts` and `lib/env.test.ts`. OpenRouter, Groq, Together,
+> vLLM, LM Studio and OpenAI itself are all reachable by pointing `LLM_ENDPOINT` at one
+> of them. Phase 5 needed it, so it was built as a dependency rather than as this phase.
+
+What remains for this phase:
+
+- **A live-verified retrieval provider.** `ResearchProvider` now has a real
+  implementation — `research/provider/openrouter-search-provider.ts` — but the one thing
+  no test can establish is that a given OpenRouter account and model honour the `web`
+  plugin, because a test that reached the real endpoint would fail on a plane, in CI, and
+  the day a key is rotated. The adapter is built so that a wrong guess fails safe rather
+  than fabricating evidence; confirming it against a live account is one `curl`, quoted in
+  `docs/RESEARCH.md`.
 - Prompt construction kept isolated from the transport, so swapping a vendor does not
   mean rewriting prompts.
 - Response parsing that treats model output as untrusted, as the planner already does.
 - Provider selection by environment, which is already how resolution works.
+- Any second wire protocol — Anthropic's messages API, Gemini's `generateContent` — as a
+  new style and a new adapter beside the existing one.
 
 **Depends on Phase 3:** the interface, the resolution point, and the credential
 containment in `src/lib/env.ts` are all in place.
@@ -250,8 +417,10 @@ containment in `src/lib/env.ts` are all in place.
 - Retrieval at planning time, and writes at the end of a run.
 - Persisted in PostgreSQL behind services, so memory survives a restart.
 
-**Depends on Phases 5–6:** there is nothing worth remembering until runs use a real
-model and their results are stored.
+**Depends on Phases 5R and 6:** there is nothing worth remembering until runs use a real
+model and their results are stored. Phase 5 built the layer that will *produce* the
+material worth remembering, and deliberately gave it no memory of its own — a research
+run's sources are available only from its own record.
 
 ---
 

@@ -13,8 +13,28 @@
 
 import type { ExecutionProvider } from "@/types/agent";
 
-/** Which part of the engine is asking. Lets an adapter answer appropriately. */
-export type ModelOperation = "plan" | "execute_step" | "evaluate";
+/**
+ * Which part of the engine is asking. Lets an adapter answer appropriately.
+ *
+ * Phase 5 added the two `research_*` members, and they were added rather than
+ * folded into `plan` and `execute_step` for a reason worth recording. Research
+ * planning asks a different question from agent planning — "what must be
+ * established, and what do I search for to establish it" against "what steps
+ * does this objective decompose into" — and finding extraction asks a different
+ * question again: what does this retrieved passage actually establish. An
+ * adapter that had to tell them apart by inspecting its own `context` bag would
+ * be guessing at a distinction the type system can simply state.
+ *
+ * The cost of the addition is that every adapter must handle the new members,
+ * and that is the point of a closed union: the compiler names every one of them
+ * rather than letting one silently fall through to `undefined`.
+ */
+export type ModelOperation =
+  | "plan"
+  | "execute_step"
+  | "evaluate"
+  | "research_plan"
+  | "research_findings";
 
 export interface ModelProviderRequest {
   operation: ModelOperation;

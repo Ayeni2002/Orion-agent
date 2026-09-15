@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getModelProviderConfig, readModelApiKey } from "./env";
+import { getModelProviderConfig, getResearchConfig, readModelApiKey } from "./env";
 
 /**
  * Environment resolution for the model provider.
@@ -148,5 +148,162 @@ describe("readModelApiKey", () => {
     expect(config.hasApiKey).toBe(true);
     expect(JSON.stringify(config)).not.toContain(FAKE_KEY);
     expect(Object.values(config)).not.toContain(FAKE_KEY);
+  });
+});
+
+/**
+ * Research configuration — Phase 5's limits and the search model.
+ *
+ * Every variable this module reads is stubbed, including the ones left empty,
+ * because Vitest does not load `.env.local` and an unstubbed name reads whatever
+ * the shell happens to hold. A test that asserted the defaults without stubbing
+ * would pass on a clean machine and fail on the operator's, which is the least
+ * useful way for a test to behave.
+ */
+function clearResearchEnv() {
+  vi.stubEnv("RESEARCH_SEARCH_MODEL", "");
+  vi.stubEnv("RESEARCH_MAX_TASKS", "");
+  vi.stubEnv("RESEARCH_MAX_SOURCES_PER_TASK", "");
+  vi.stubEnv("RESEARCH_MAX_SOURCES", "");
+  vi.stubEnv("RESEARCH_MAX_FINDINGS", "");
+  vi.stubEnv("RESEARCH_MAX_DURATION_MS", "");
+}
+
+describe("getResearchConfig", () => {
+  it("defaults every limit with nothing configured", () => {
+    clearResearchEnv();
+
+    // A fresh checkout runs research with these ceilings and no configuration at
+    // all, so they are behaviour rather than placeholders.
+    expect(getResearchConfig()).toStrictEqual({
+      limits: {
+        maxTasks: 5,
+        maxSourcesPerTask: 5,
+        maxSourcesTotal: 20,
+        maxFindings: 50,
+        maxDurationMs: 120_000,
+      },
+    });
+  });
+
+  it("reads a limit from the environment", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_TASKS", "12");
+
+    expect(getResearchConfig().limits.maxTasks).toBe(12);
+  });
+
+  it("reads each limit independently", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_SOURCES_PER_TASK", "3");
+    vi.stubEnv("RESEARCH_MAX_SOURCES", "40");
+    vi.stubEnv("RESEARCH_MAX_FINDINGS", "100");
+    vi.stubEnv("RESEARCH_MAX_DURATION_MS", "5000");
+
+    expect(getResearchConfig().limits).toStrictEqual({
+      maxTasks: 5,
+      maxSourcesPerTask: 3,
+      maxSourcesTotal: 40,
+      maxFindings: 100,
+      maxDurationMs: 5_000,
+    });
+  });
+
+  it("leaves the search model unset rather than defaulting it", () => {
+    clearResearchEnv();
+
+    // Absent, not defaulted to LLM_MODEL here: the fallback belongs to the
+    // caller, which is the only thing that knows whether the two should differ.
+    expect(getResearchConfig().searchModel).toBeUndefined();
+  });
+
+  it("carries the search model when one is set", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_SEARCH_MODEL", "  openai/gpt-4o-mini  ");
+
+    // Read, reported and — since the web-search adapter landed — consumed:
+    // `resolveResearchProvider` uses it as the model a retrieval call names,
+    // falling back to LLM_MODEL when it is absent. This asserts the
+    // configuration contract at its source; the resolver's use of it is
+    // asserted in `research/provider/index.test.ts`.
+    expect(getResearchConfig().searchModel).toBe("openai/gpt-4o-mini");
+  });
+
+  // A limit is a safety control, so a malformed one must not fall back to the
+  // default. An operator who typed `abc` and silently got 20 would believe they
+  // had set a ceiling they had not, and would find out from a larger bill rather
+  // than from a configuration error.
+  it("refuses a limit that is not a number", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_SOURCES", "abc");
+
+    expect(() => getResearchConfig()).toThrow(/RESEARCH_MAX_SOURCES/);
+  });
+
+  it("refuses a fractional limit", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_TASKS", "2.5");
+
+    expect(() => getResearchConfig()).toThrow(/RESEARCH_MAX_TASKS/);
+  });
+
+  it("refuses a limit of zero", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_FINDINGS", "0");
+
+    // Zero would mean "retrieve nothing", which is a run that cannot do its job
+    // rather than a tight budget.
+    expect(() => getResearchConfig()).toThrow(/RESEARCH_MAX_FINDINGS/);
+  });
+
+  it("refuses a negative limit", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_DURATION_MS", "-1");
+
+    expect(() => getResearchConfig()).toThrow(/RESEARCH_MAX_DURATION_MS/);
+  });
+
+  it("names the variable that is wrong", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_MAX_SOURCES_PER_TASK", "many");
+
+    expect(() => getResearchConfig()).toThrow(
+      /RESEARCH_MAX_SOURCES_PER_TASK must be a positive whole number/,
+    );
+  });
+
+  // The deliberate absence, asserted so it stays deliberate. Retrieval uses the
+  // same endpoint and the same credential as planning, so a second copy of
+  // either here would be a second place to rotate one secret — and the copy that
+  // was missed would be this one.
+  it("carries no endpoint and no credential", () => {
+    clearResearchEnv();
+    vi.stubEnv("LLM_API_KEY", FAKE_KEY);
+
+    const config = getResearchConfig();
+
+    // `limits` and nothing else, because `searchModel` is absent rather than
+    // present-and-undefined when unset — the object is spread conditionally, and
+    // the assertion states which of the two shapes is the real one.
+    expect(Object.keys(config).sort()).toStrictEqual(["limits"]);
+    expect(JSON.stringify(config)).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(config)).not.toContain("http");
+  });
+
+  it("carries nothing but its own two keys once a search model is set", () => {
+    clearResearchEnv();
+    vi.stubEnv("RESEARCH_SEARCH_MODEL", "openai/gpt-4o-mini");
+    vi.stubEnv("LLM_API_KEY", FAKE_KEY);
+    vi.stubEnv("LLM_ENDPOINT", "https://openrouter.ai/api/v1");
+
+    const config = getResearchConfig();
+
+    // The same property with the other branch taken. A key appearing here when
+    // the search model is set is how an endpoint or a credential would arrive on
+    // this object, and it is the branch a caller would exercise by setting the
+    // variable the endpoint is documented next to.
+    expect(Object.keys(config).sort()).toStrictEqual(["limits", "searchModel"]);
+    expect(JSON.stringify(config)).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(config)).not.toContain("http");
   });
 });

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { ResearchLimits } from "@/types/research";
+
 /**
  * Environment configuration.
  *
@@ -191,5 +193,83 @@ export function getModelProviderConfig(): ModelProviderConfig {
     ...(endpoint === undefined ? {} : { endpoint }),
     ...(model === undefined ? {} : { model }),
     hasApiKey: typeof apiKey === "string" && apiKey.trim().length > 0,
+  };
+}
+
+/**
+ * Reads a positive integer, or falls back to a default.
+ *
+ * A malformed value throws rather than falling back silently. A limit is a
+ * safety control: an operator who typed `RESEARCH_MAX_SOURCES=abc` and got the
+ * default back would believe they had set a ceiling they had not, and the
+ * failure would appear as an unexpectedly expensive run rather than as a
+ * configuration error.
+ */
+function readLimit(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+
+  if (raw === undefined || raw.length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${name} must be a positive whole number, but it is set to "${raw}".`,
+    );
+  }
+
+  return parsed;
+}
+
+export interface ResearchConfig {
+  /**
+   * The model used for retrieval, when it differs from the planning model.
+   *
+   * Optional, and it defaults to `LLM_MODEL` at the point of use. Retrieval and
+   * planning have different appetites — a search call is short and a plan is
+   * not — so an operator may reasonably want a cheaper model fetching and a
+   * stronger one reasoning, without configuring a second endpoint.
+   */
+  searchModel?: string;
+  limits: ResearchLimits;
+}
+
+/**
+ * Research configuration.
+ *
+ * Note what is NOT here: an endpoint or a credential. Retrieval through
+ * OpenRouter is a chat completion with a search plugin attached, so it uses the
+ * same endpoint and the same key as planning — and duplicating them into a
+ * second set of variables would create two places to rotate one credential, one
+ * of which would eventually be missed.
+ *
+ * Whether retrieval is *available* is therefore derived rather than declared,
+ * and it is derived by `resolveResearchProvider` rather than here: a research
+ * run can search exactly when `LLM_ENDPOINT` points at openrouter.ai, whose
+ * `web` plugin is the one this build knows how to ask. Every other remote
+ * endpoint — Groq, Together, vLLM, LM Studio — speaks the same protocol and has
+ * no such plugin, so it resolves to the development adapter and reports itself
+ * unconfigured. That is the honest reading: it means a `dev` style reports
+ * research as unconfigured, and so does a remote endpoint that cannot search,
+ * which is better than a run that appears to search and finds nothing.
+ *
+ * This function therefore reads no endpoint and makes no decision about
+ * retrieval. It returns the *settings* for research; which provider they apply
+ * to is one layer up.
+ */
+export function getResearchConfig(): ResearchConfig {
+  const searchModel = process.env.RESEARCH_SEARCH_MODEL?.trim() || undefined;
+
+  return {
+    ...(searchModel === undefined ? {} : { searchModel }),
+    limits: {
+      maxTasks: readLimit("RESEARCH_MAX_TASKS", 5),
+      maxSourcesPerTask: readLimit("RESEARCH_MAX_SOURCES_PER_TASK", 5),
+      maxSourcesTotal: readLimit("RESEARCH_MAX_SOURCES", 20),
+      maxFindings: readLimit("RESEARCH_MAX_FINDINGS", 50),
+      maxDurationMs: readLimit("RESEARCH_MAX_DURATION_MS", 120_000),
+    },
   };
 }

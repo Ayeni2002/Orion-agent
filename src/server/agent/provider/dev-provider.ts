@@ -32,6 +32,15 @@ import type {
  * real clock reads, so two runs of the same objective differ in their
  * timestamps while their plans and step outputs are identical. Tests assert on
  * the latter.
+ *
+ * Phase 5 added two more operations, for the research subsystem: `research_plan`
+ * and `research_findings`. Both follow the same rule as the rest of this file —
+ * they rearrange text that was handed to them and state nothing they were not
+ * given. `research_findings` in particular quotes its sources verbatim rather
+ * than summarising them, so the finding extractor's quote check passes for
+ * reasons that are structural rather than lucky: an adapter that cannot invent
+ * cannot fail an honesty check, and an adapter that cannot fail an honesty check
+ * is not a substitute for a model.
  */
 
 export const DEV_PROVIDER_ID = "dev";
@@ -258,6 +267,162 @@ function readContextString(
     : undefined;
 }
 
+/**
+ * Bounds the adapter imposes on its own research output.
+ *
+ * Duplicated from the research schemas rather than imported, and that is a
+ * layering decision rather than an oversight: the agent engine does not depend
+ * on the research subsystem built on top of it, and an adapter reaching down
+ * into `src/server/research/` for a constant would invert that. The duplication
+ * is safe because it is checked — the research planner and the finding extractor
+ * both validate this adapter's output against their own schemas, so a drift
+ * between these numbers and those surfaces as a failed extraction in a test
+ * rather than as silently truncated text in a result.
+ */
+const DEV_STATEMENT_MIN_LENGTH = 8;
+const DEV_STATEMENT_MAX_LENGTH = 500;
+const DEV_QUOTE_MIN_LENGTH = 8;
+const DEV_QUOTE_MAX_LENGTH = 1_000;
+
+/**
+ * The facets the deterministic adapter breaks every research question into.
+ *
+ * Fixed, and deliberately not derived from the question. This adapter performs
+ * no inference, so any facet list it produced by "reading" the question would be
+ * a pattern match dressed up as understanding. Three stable facets are honest
+ * about what is happening and still exercise the loop — several tasks, several
+ * queries, several sets of results.
+ *
+ * Every query must differ from the others: the plan schema refuses duplicate
+ * queries, because two tasks searching the same thing retrieve one source and
+ * the run pays for two.
+ */
+const DEV_RESEARCH_FACETS = [
+  "background and definitions",
+  "current state and recent developments",
+  "criticism, limitations and open questions",
+] as const;
+
+/**
+ * The opening of a source's text, shaped to fit the quote contract.
+ *
+ * Whitespace is collapsed before measuring, which is safe rather than lossy: the
+ * quote check normalises both sides, so a collapsed quote still verifies against
+ * the raw source text.
+ *
+ * The cut is made at a whitespace boundary rather than at an exact offset. A
+ * slice taken mid-character can split a sequence that NFKC composes differently
+ * depending on where it starts, and a quote that normalises to something the
+ * source does not contain would be downgraded to a model inference — the one
+ * failure this adapter must not manufacture, because it would make the run's own
+ * honesty counters report a problem that does not exist.
+ *
+ * Returns `undefined` when there is nothing quotable, and the caller then emits
+ * no finding for that source. A source with no text cannot support a quote, and
+ * a finding resting on one would be exactly the unsupported attribution §12
+ * exists to catch.
+ *
+ * The floor is checked against the whole source before anything is cut, and that
+ * ordering is the fix for a real defect rather than a tidy-up. Without it, a
+ * source reading "Hi." produced the quote "Hi." — three characters, below the
+ * extractor's own `QUOTE_MIN_LENGTH`, so the response failed schema validation
+ * and the *entire* extraction failed with it. One stub page was enough to turn a
+ * run's findings into an error. A source with nothing long enough to quote now
+ * yields no finding, which is the outcome this function's contract already
+ * promised for an unquotable source.
+ */
+function excerpt(content: string): string | undefined {
+  const collapsed = content.replace(/\s+/g, " ").trim();
+
+  if (collapsed.length < DEV_QUOTE_MIN_LENGTH) {
+    return undefined;
+  }
+
+  // Prefer a complete opening sentence, but only when it is long enough to
+  // quote. A stub like "Home." is not a passage, so the raw opening is used
+  // instead — it is still verbatim, which is the only property that matters.
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(collapsed)?.[0]?.trim();
+  const candidate =
+    sentence !== undefined && sentence.length >= DEV_QUOTE_MIN_LENGTH
+      ? sentence
+      : collapsed;
+
+  if (candidate.length <= DEV_QUOTE_MAX_LENGTH) {
+    return candidate;
+  }
+
+  const boundary = candidate.lastIndexOf(" ", DEV_QUOTE_MAX_LENGTH);
+  const cut = candidate
+    .slice(0, boundary > 0 ? boundary : DEV_QUOTE_MAX_LENGTH)
+    .trim();
+
+  return cut.length >= DEV_QUOTE_MIN_LENGTH ? cut : undefined;
+}
+
+/** Truncates a statement at a word boundary. A statement is not quoted, so this is free to shorten it. */
+function clampStatement(statement: string): string {
+  const collapsed = statement.replace(/\s+/g, " ").trim();
+
+  if (collapsed.length <= DEV_STATEMENT_MAX_LENGTH) {
+    return collapsed;
+  }
+
+  const boundary = collapsed.lastIndexOf(" ", DEV_STATEMENT_MAX_LENGTH);
+
+  return collapsed
+    .slice(0, boundary > 0 ? boundary : DEV_STATEMENT_MAX_LENGTH)
+    .trim();
+}
+
+/** One numbered source as the finding extractor supplies it. Context is untrusted. */
+interface DevContextSource {
+  index: number;
+  url: string;
+  title?: string;
+  content?: string;
+}
+
+function readContextSources(value: unknown): DevContextSource[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const sources: DevContextSource[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const { index, url, title, content } = record;
+
+    // The sign matters as much as the type. `extractedFindingSchema` declares
+    // `sourceIndex` as a non-negative integer, so an entry numbered -1 was
+    // accepted here and then rejected by the extractor — turning one malformed
+    // entry in the context into a failed extraction for the whole run. The
+    // filter now matches the contract it feeds.
+    if (
+      typeof index !== "number" ||
+      !Number.isInteger(index) ||
+      index < 0
+    ) {
+      continue;
+    }
+
+    sources.push({
+      index,
+      url: typeof url === "string" ? url : "",
+      ...(typeof title === "string" && title.trim().length > 0
+        ? { title: title.trim() }
+        : {}),
+      ...(typeof content === "string" ? { content } : {}),
+    });
+  }
+
+  return sources;
+}
+
 function jsonResponse(value: unknown, model: string): ModelProviderResponse {
   return {
     text: JSON.stringify(value, null, 2),
@@ -319,6 +484,95 @@ export function createDevModelProvider(
               `${counts.skipped} skipped. Generated by the deterministic ` +
               "development adapter, not a language model.",
             confidence: counts.failed > 0 ? "low" : "medium",
+          },
+          model,
+        );
+      }
+
+      /**
+       * Phase 5's first research operation: a question in, retrieval tasks out.
+       *
+       * The shape is what the research planner's schema requires, and the values
+       * are what it is possible to produce without inference: a fixed
+       * decomposition of whatever was asked, with the question text echoed
+       * verbatim into each query rather than interpreted. Nothing here states a
+       * fact about the subject — §7's rule that a plan says what to look up and
+       * never what is true applies to this adapter too, and applies most of all
+       * to it, since a deterministic adapter has no way to be right.
+       */
+      case "research_plan": {
+        const question =
+          readContextString(request.context, "question") ?? "the research question";
+        const focus = summarize(question);
+
+        return jsonResponse(
+          {
+            restatement:
+              `A fixed ${DEV_RESEARCH_FACETS.length}-part decomposition of: ${focus}. ` +
+              "Produced by the deterministic development adapter, which does not read the question.",
+            tasks: DEV_RESEARCH_FACETS.map((facet) => ({
+              question: `Establish the ${facet} relevant to: ${focus}`,
+              query: `${focus} ${facet}`,
+            })),
+          },
+          model,
+        );
+      }
+
+      /**
+       * Phase 5's second research operation: retrieved text in, findings out.
+       *
+       * This one is worth reading carefully, because it is the adapter most able
+       * to produce something that *looks* like research and is not. It does not
+       * summarise, interpret or conclude. It copies the opening of each source
+       * that has text, labels the copy with where it came from, and claims
+       * nothing else — so every finding it emits is `basis: "source"` by
+       * construction, and the quote it supplies is a real substring of the text
+       * it cites. A real model's output can fail that check; this one cannot,
+       * which is precisely why it is not a model.
+       *
+       * Sources with no content produce no finding, because there would be
+       * nothing to quote. And the gap it reports is the truthful one: it does
+       * not judge whether these sources answer the question, because judging
+       * that is inference and this adapter does not infer.
+       */
+      case "research_findings": {
+        const question =
+          readContextString(request.context, "question") ?? "the question";
+        const sources = readContextSources(request.context.sources);
+        const findings: Array<{
+          statement: string;
+          sourceIndex: number;
+          quote: string;
+        }> = [];
+
+        for (const source of sources) {
+          const quote = source.content === undefined ? undefined : excerpt(source.content);
+
+          if (quote === undefined) {
+            continue;
+          }
+
+          const label =
+            source.title ?? (source.url.length > 0 ? source.url : `source ${source.index}`);
+          const statement = clampStatement(`${label} contains: ${quote}`);
+
+          if (statement.length < DEV_STATEMENT_MIN_LENGTH) {
+            continue;
+          }
+
+          findings.push({ statement, sourceIndex: source.index, quote });
+        }
+
+        return jsonResponse(
+          {
+            findings,
+            gaps: [
+              clampStatement(
+                "The deterministic development adapter copies text out of each source " +
+                  `without interpreting it, so it does not judge whether these sources answer the question: ${summarize(question)}`,
+              ),
+            ],
           },
           model,
         );

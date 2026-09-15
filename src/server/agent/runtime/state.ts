@@ -123,6 +123,26 @@ export class ExecutionStateBuilder {
     this.touch();
   }
 
+  /**
+   * Records an observation about the run itself rather than about a step.
+   *
+   * Added in Phase 5, and it fills a gap the type had already anticipated:
+   * `Observation.stepId` is documented as absent "for observations about the run
+   * itself rather than a step", but until now the only way to add an observation
+   * was `completeStep` or `finishStep`, both of which require a step id. A
+   * research run that stops before it plans anything — because no retrieval is
+   * configured — has exactly such an observation to record, and recording it
+   * against a fabricated step id would put a non-step into `completedStepIds`.
+   *
+   * Deliberately does not touch `completedStepIds`: an observation about the run
+   * is not a step completion, and conflating them is what this method exists to
+   * avoid.
+   */
+  addObservation(observation: Observation): void {
+    this.state.observations.push(observation);
+    this.touch();
+  }
+
   private clearCurrentStep(stepId: string): void {
     if (this.state.currentStepId === stepId) {
       this.state.currentStepId = undefined;

@@ -33,6 +33,8 @@ export interface StubProviderScript {
   plan?: (context: Record<string, unknown>) => StubResponse;
   execute_step?: (context: Record<string, unknown>) => StubResponse;
   evaluate?: (context: Record<string, unknown>) => StubResponse;
+  research_plan?: (context: Record<string, unknown>) => StubResponse;
+  research_findings?: (context: Record<string, unknown>) => StubResponse;
 }
 
 export interface StubProviderOptions {
@@ -62,12 +64,38 @@ export function scriptedPlan(
   };
 }
 
+/**
+ * Builds a research plan object for a list of questions.
+ *
+ * The Phase 5 counterpart of `scriptedPlan`, and it derives each task's `query`
+ * from the question it is paired with. Tests that need a query which does not
+ * resemble its question — to prove the two are genuinely separate fields —
+ * should build the plan themselves.
+ */
+export function scriptedResearchPlan(
+  questions: string[],
+): Record<string, unknown> {
+  return {
+    restatement: `Establish: ${questions.join("; ")}`,
+    tasks: questions.map((question) => ({
+      question,
+      query: question,
+    })),
+  };
+}
+
 export function createStubModelProvider({
   script,
   descriptor,
   calls,
 }: StubProviderOptions): ModelProvider {
-  const recorded = calls ?? { plan: 0, execute_step: 0, evaluate: 0 };
+  const recorded = calls ?? {
+    plan: 0,
+    execute_step: 0,
+    evaluate: 0,
+    research_plan: 0,
+    research_findings: 0,
+  };
 
   function respond(request: ModelProviderRequest): ModelProviderResponse {
     const handler = script[request.operation];
