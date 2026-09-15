@@ -2,6 +2,7 @@ import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
 import { MarketingShell } from "@/components/layout/marketing-shell";
+import { SplineHero } from "@/components/marketing/spline-hero";
 import { Button } from "@/components/ui/button";
 
 export default function HomePage() {
@@ -36,6 +37,10 @@ export default function HomePage() {
             </Button>
           </div>
         </section>
+
+        <div className="mt-16">
+          <SplineHero />
+        </div>
 
         <p className="mx-auto mt-16 max-w-2xl text-center text-xs text-muted-foreground">
           Phase 2 provides the application shell only. The workspace collects an
