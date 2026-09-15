@@ -4,21 +4,23 @@
 
 Orion turns complex goals into structured, researched, actionable results. The
 intended workflow — understand an objective, plan the work, select tools,
-execute, observe, evaluate, and revise — is now real up to the point where tools
-and a real model are needed.
+execute, observe, evaluate, and revise — is now real up to the point where
+external research and a real model are needed.
 
-> **Phase 3 is the agent engine.** The engine exists and runs end to end: it
-> plans an objective, executes the plan, evaluates the outcome and returns a
-> structured result. What backs it is deliberately thin — a **deterministic
-> development adapter** instead of a real model, and an **empty tool registry**
-> — so there is **no external research, browsing, scraping or tool execution**.
-> See [Not implemented](#not-implemented).
+> **Phase 4 is the tool system.** The engine runs end to end and now calls real
+> tools: it plans an objective, executes the plan, evaluates the outcome and
+> returns a structured result. What backs it is still deliberately thin — a
+> **deterministic development adapter** instead of a real model, and a
+> **catalogue holding one read-only tool** — so there is **no external research,
+> browsing, scraping, or any tool that reaches outside the process**. See
+> [Not implemented](#not-implemented).
 
 ## Documentation
 
 | Document | What it covers |
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The shape of the system — frontend, backend, database boundary, and the agent engine, model abstraction, tool system and memory |
+| [`docs/TOOL_SYSTEM.md`](docs/TOOL_SYSTEM.md) | The tool layer in full — vocabulary, registry, executor, permissions, receipts, and how to add a tool |
 | [`docs/DEVELOPMENT_PHASES.md`](docs/DEVELOPMENT_PHASES.md) | The phase roadmap, what each phase depends on, what is done, and the gates every phase must pass |
 
 ## Stack
@@ -74,6 +76,7 @@ src/
   app/                    routes (App Router)
     api/health/           liveness endpoint — the API convention in miniature
     api/agent/            executions (POST, GET), executions/[id] (GET), capabilities
+    api/tools/            the registered tool catalogue (GET) — metadata only
     (app)/                the application surface (shell + sidebar)
     layout.tsx            root layout: shell + metadata
     page.tsx              landing page
@@ -104,7 +107,8 @@ src/
 src/server/agent/
   provider/     ModelProvider interface, the development adapter, a scripted test one
   planner/      objective → validated plan (Zod, plus a dependency-graph check)
-  executor/     walks the plan, records observations, resolves tools via a registry
+  executor/     walks the plan, records observations, calls tools through the tool layer
+  tools/        the tool system — definitions, registry, executor, catalogue
   evaluator/    computes the verdict deterministically, requests a narrative
   runtime/      state builder, append-only event log, process-local store, the runner
   errors.ts     AgentEngineError — an engine failure with a machine-readable code
@@ -113,7 +117,30 @@ src/server/agent/
 The lifecycle is assembled in `runtime/runner.ts`, which **never throws**: a
 failed run comes back as an execution with `status: "failed"` and structured
 errors attached. One failed step does not abort the run — dependent steps are
-skipped and independent branches continue.
+skipped and independent branches continue. A failed **tool call** fails its step
+for the same reason, and is recorded as a receipt either way.
+
+### The tool system
+
+```
+src/server/agent/tools/
+  definition.ts   ToolDefinition, ToolExecutionContext, ToolReceipt, ToolPermission
+  registry.ts     register / get / has / list / canExecute
+  executor.ts     the only sanctioned way to call a tool
+  catalog.ts      the one file that decides which tools a run can call
+  builtin/        the tools that ship — currently text-analysis.ts
+```
+
+Every call goes through `ToolExecutor`, which resolves the tool, checks the
+run's permission **before** validating the input, validates the input against
+the tool's schema, executes, and returns a **receipt** — always, including when
+the call failed. **Deny by default**: a run is granted `read_only` and nothing
+else, and a tool needing more is refused until someone widens the grant on
+purpose. A tool receives its validated input and a small execution context, and
+nothing else — no filesystem, shell, environment or database handle.
+
+[`docs/TOOL_SYSTEM.md`](docs/TOOL_SYSTEM.md) documents the layer in full,
+including the seven steps for adding a tool.
 
 ### Conventions
 
@@ -145,9 +172,13 @@ response body, an error message or a log line.
 `AgentTask`, `TaskStatus`, `TaskStep`, `Tool`, `ToolExecution` and `AgentResult`,
 plus the execution vocabulary Phase 3 added — `StepStatus`, `ExecutionStatus`,
 `Observation`, `ExecutionState`, `AgentEvent`, `AgentExecution`,
-`AgentExecutionError` and `EngineCapabilities`. Timestamps are ISO 8601 strings
-so every type survives a JSON round-trip. Prefer adding optional fields or new
-union members over changing existing ones.
+`AgentExecutionError` and `EngineCapabilities` — and the tool vocabulary Phase 4
+added: `ToolCapability`, `ToolInput`, `ToolOutput`, `ToolExecutionStatus` and
+`ToolCatalog`. Timestamps are ISO 8601 strings so every type survives a JSON
+round-trip. Prefer adding optional fields or new union members over changing
+existing ones. Anything holding a function or a Zod schema — a `ToolDefinition`,
+say — belongs beside the code that uses it, not here, because it cannot survive
+that round-trip.
 
 **The client cannot assert that work was done.** No endpoint accepts a status,
 a step list or a result. A run's status is computed by the evaluator from what
@@ -157,11 +188,12 @@ the engine sees them.
 ## Testing
 
 `npm test` runs Vitest in a `node` environment. The engine is tested at two
-levels: units (plan validation, the adapter's determinism, error conversion, the
-store's bound) and integration (`runtime/runner.test.ts` drives the whole
-lifecycle against a *scripted* provider — cancellation, a failing step, an
-unavailable capability, a registered tool, planner failure, provider
-misconfiguration).
+levels: units (plan validation, the adapter's determinism, the tool registry, the
+tool executor's pipeline, the text analysis rules, error conversion, the store's
+bound) and integration (`runtime/runner.test.ts` drives the whole lifecycle
+against a *scripted* provider — cancellation, a failing step, an unavailable
+capability, a tool-backed step end to end, a failed tool, a refused permission,
+rejected tool input, planner failure, provider misconfiguration).
 
 **No test needs network access or an API key**, and the suite passes with no
 credentials present. There is still no component-render or end-to-end browser
@@ -192,9 +224,12 @@ should be described as working:
 
 - **External model calls** — the only adapter is the deterministic development
   one. It performs no inference and contacts nothing, and every result says so.
-- **Tools** — the registry exists and is empty; every tool, its input schema and
-  the tool runtime are absent. A step needing an external capability fails with
-  `capability_unavailable` rather than returning invented findings.
+- **Tools that reach outside the process** — the catalogue holds exactly one tool,
+  `text.analyze`, which counts characters, words, sentences and paragraphs in text
+  it was given. There is no web search, browser automation, scraping, external API,
+  shell, code execution, filesystem or database access. A step needing an external
+  capability fails with `capability_unavailable` rather than returning invented
+  findings. There is also no tool timeout, and a step makes at most one tool call.
 - **Research** — no web search, browsing, scraping, email or social integration.
 - **Memory and reports** — no long-term memory, no vector store, and no report
   generation. Task state is not memory.

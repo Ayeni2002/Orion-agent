@@ -40,6 +40,21 @@ export const plannedStepSchema = z.object({
     .max(MAX_STEP_DEPENDENCIES)
     .optional(),
   toolId: z.string().trim().min(1).max(100).optional(),
+  /**
+   * Input for that tool, as the planner proposed it.
+   *
+   * Validated no further here, and deliberately so. The planner cannot know
+   * what a tool accepts — it chooses from a catalogue whose schemas live with
+   * the tools — so the only useful validation is the tool's own `inputSchema`,
+   * applied by `ToolExecutor` at the moment of the call. Checking it here would
+   * mean two places encoding the same contract, and the planner's copy would be
+   * the one that goes stale.
+   *
+   * Note this value is never stored raw: the receipt records the input the tool
+   * schema *produced*, so an oversized or malformed proposal does not reach
+   * execution state.
+   */
+  toolInput: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const planSchema = z.object({
@@ -91,6 +106,17 @@ export function validatePlanGraph(plan: PlannedPlan): PlanValidationIssue[] {
           message: `A step depends on step ${dependency}, which does not come before it.`,
         });
       }
+    }
+
+    // Input for a tool the step never names. Harmless to execute — the input is
+    // simply ignored — but it always means the planner lost track of its own
+    // output, the same signal a duplicated dependency gives, and it is worth
+    // surfacing rather than tolerating.
+    if (step.toolInput !== undefined && step.toolId === undefined) {
+      issues.push({
+        index,
+        message: "A step provides tool input but does not name a tool.",
+      });
     }
   });
 

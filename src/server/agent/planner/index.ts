@@ -31,6 +31,7 @@ const PLANNER_INSTRUCTION = [
   "- Each step must describe a single unit of work that can be completed or fail on its own.",
   "- `dependsOn` holds zero-based indices of EARLIER steps in the same list. Omit it when the step depends on nothing.",
   "- A step may also carry `toolId` when it needs a capability Orion must provide rather than reasoning alone.",
+  "- When a step names a `toolId`, it must also carry `toolInput`: the arguments that tool needs, as an object. The tool validates them; do not guess at its schema.",
   "- Do not invent results. Describe the work to be done, not its outcome.",
 ].join("\n");
 
@@ -124,6 +125,10 @@ export async function createPlan({
           .filter((dependencyId): dependencyId is string => dependencyId !== undefined),
         expectedOutput: step.expectedOutput,
         toolId: step.toolId,
+        // Carried through unvalidated on purpose: the tool's own schema is the
+        // only thing that can check it, and `ToolExecutor` is where that
+        // happens. See `plannedStepSchema`.
+        toolInput: step.toolInput,
         createdAt: timestamp,
         updatedAt: timestamp,
       }) satisfies TaskStep,

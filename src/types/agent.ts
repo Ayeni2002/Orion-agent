@@ -17,6 +17,15 @@
  * narrowed `TaskStep.status` from `TaskStatus` to `StepStatus`. Everything
  * that Phase 1 defined is still here; nothing was replaced.
  *
+ * Phase 4 added the tool vocabulary that survives the wire — `ToolCapability`,
+ * `ToolInput`, `ToolOutput`, `ToolExecutionStatus` — and reshaped `Tool` and
+ * `ToolExecution`, neither of which had a producer or a consumer in Phase 3.
+ * The *executable* half of the tool system (`ToolDefinition`, `ToolPermission`,
+ * `ToolExecutionContext`, `ToolReceipt`) lives in
+ * `src/server/agent/tools/definition.ts`, because it holds functions and Zod
+ * schemas and therefore cannot live in this file: everything here must be
+ * serializable, and a function or a `ZodType` is not.
+ *
  * Every type in this file is serializable by construction. That is a hard
  * requirement, not a style preference: execution state crosses the HTTP
  * boundary and is written to logs, and a `Map`, `Set` or class instance would
@@ -103,31 +112,114 @@ export interface TaskStep {
   expectedOutput?: string;
   /** Id of the `Tool` this step intends to use, if any. */
   toolId?: string;
+  /**
+   * Input for that tool, as the planner proposed it.
+   *
+   * Untrusted by construction: it originates from model output, so a tool's own
+   * `inputSchema` is what makes it safe, and `ToolExecutor` is what applies it.
+   * Nothing downstream of the planner may assume this is well-formed.
+   */
+  toolInput?: ToolInput;
   execution?: ToolExecution;
   outcome?: StepOutcome;
   createdAt: string;
   updatedAt: string;
 }
 
+/**
+ * What a tool is allowed to reach.
+ *
+ * The list is deliberately short and closed. A tool declares exactly which of
+ * these it needs, and a run grants exactly which of these it permits; anything
+ * not granted is refused. `read_only` is the only capability Phase 4 ships a
+ * tool for, and it is the only one a run grants by default.
+ *
+ * There is no `shell`, `filesystem`, `code_execution` or `credentials` member —
+ * not because they are unimplemented, but because a tool that needs them is a
+ * design error at this layer, and leaving them out of the union means such a
+ * tool cannot express its need in the type system at all.
+ */
+export type ToolCapability =
+  | "read_only"
+  | "network"
+  | "data_access"
+  | "user_action";
+
+/** Untrusted input for a tool, exactly as the planner proposed it. */
+export type ToolInput = Record<string, unknown>;
+
+/**
+ * What a tool returns on success.
+ *
+ * A plain object for the same reason every other type here is plain: it becomes
+ * an `Observation.output` and crosses the HTTP boundary, so it must survive
+ * `JSON.stringify` unchanged. A tool must not return a class instance, a `Map`
+ * or a live SDK response.
+ */
+export type ToolOutput = Record<string, unknown>;
+
+/**
+ * Lifecycle state of one tool call.
+ *
+ * Narrower than `TaskStatus` for the same reason `StepStatus` is: a tool call is
+ * never `planning` or `awaiting_input`, and admitting those values would let a
+ * caller write a state no code path can produce. A tool call is recorded only
+ * once it has finished, so `running` describes the receipt for a call that was
+ * still in flight when it failed, not a state anything polls for.
+ */
+export type ToolExecutionStatus = "running" | "succeeded" | "failed";
+
+/**
+ * Public metadata for a registered tool.
+ *
+ * This is the projection a caller sees — the `/api/tools` response and the
+ * registry's `list()`. It carries no `execute` function and no Zod schema,
+ * because neither is serializable and neither is a caller's business; the
+ * behaviour stays behind `ToolExecutor`.
+ *
+ * Phase 4 removed the `inputSchema` field Phase 1 sketched here. It could not
+ * have been honoured: a real schema is a `ZodType`, which does not survive
+ * `JSON.stringify`, so keeping the field would have meant either lying about
+ * its contents or leaking internals over the wire. The schema lives on
+ * `ToolDefinition` instead, where it is actually used.
+ */
 export interface Tool {
   id: string;
   name: string;
   description?: string;
-  /**
-   * Description of accepted input. Kept loose in Phase 1 — a tool runtime
-   * will want a real schema, but nothing consumes this yet.
-   */
-  inputSchema?: Record<string, unknown>;
+  /** Tool version. Recorded on every receipt so a result can be explained later. */
+  version?: string;
+  /** Every capability this tool requires. A run must grant all of them. */
+  capabilities: ToolCapability[];
 }
 
+/**
+ * The record of one tool call, stored on the step that made it.
+ *
+ * Phase 1 defined this type and nothing ever wrote one. Phase 4 gives it a
+ * producer: `ToolExecutor` builds the receipt for every call and the executor
+ * assigns it to `TaskStep.execution`, so a finished run can answer "what tool
+ * did Orion use, with what input, and what happened?" without re-deriving it.
+ *
+ * Two changes were made when the producer arrived, both safe precisely because
+ * nothing had ever produced or read this type:
+ *
+ *   - `status` narrowed from `TaskStatus` to `ToolExecutionStatus`, so a tool
+ *     call cannot be described as `planning`.
+ *   - `error` became an `AgentExecutionError` rather than a bare string. A
+ *     string loses the machine-readable code, and "the input was invalid" and
+ *     "the tool was denied" are fixed by different people.
+ */
 export interface ToolExecution {
   id: string;
   stepId: string;
   toolId: string;
-  status: TaskStatus;
-  input?: Record<string, unknown>;
-  output?: Record<string, unknown>;
-  error?: string;
+  /** Version of the tool as it ran, so a later change is visible after the fact. */
+  toolVersion?: string;
+  status: ToolExecutionStatus;
+  input?: ToolInput;
+  output?: ToolOutput;
+  error?: AgentExecutionError;
   startedAt?: string;
   finishedAt?: string;
 }
@@ -156,6 +248,22 @@ export interface Observation {
   /** Present only when this observation records a failure. */
   error?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Where the observation came from.
+   *
+   * Phase 4 added this so a tool's finding is distinguishable from a model's
+   * without inspecting the output's shape. The distinction is the honest one a
+   * reader needs: "the text-analysis tool counted 42 words" is a measurement,
+   * while "the model answered with a summary" is a generated claim, and a
+   * result that blurs them is a result that overstates itself.
+   *
+   * Absent on observations written before Phase 4 and on any that neither a
+   * tool nor the engine explicitly attributes; readers should treat a missing
+   * value as "not stated" rather than as "model".
+   */
+  source?: "engine" | "tool";
+  /** Set alongside `source: "tool"`. The tool that produced this observation. */
+  toolId?: string;
 }
 
 /**
@@ -165,7 +273,13 @@ export interface Observation {
  * run that fails must still be returnable to the client with its partial
  * results intact. `code` is the stable contract; `message` is for humans and
  * may be reworded. `details` must never carry credentials or raw provider
- * payloads — see the security note in `docs/ARCHITECTURE.md` §12.
+ * payloads — see the security rules in `docs/TOOL_SYSTEM.md` §11.
+ *
+ * Phase 4 added the three `tool_*` codes. "The tool is not registered" is
+ * deliberately NOT among them: that case keeps its Phase 3 code,
+ * `capability_unavailable`, which already means exactly it and is already
+ * covered by the engine's tests. A second code for the same condition would be
+ * two contracts for one fact.
  */
 export type AgentErrorCode =
   | "invalid_objective"
@@ -173,6 +287,9 @@ export type AgentErrorCode =
   | "invalid_plan"
   | "executor_failed"
   | "capability_unavailable"
+  | "invalid_tool_input"
+  | "tool_permission_denied"
+  | "tool_failed"
   | "evaluation_failed"
   | "iteration_limit_reached"
   | "internal_error"
@@ -219,6 +336,12 @@ export interface ExecutionState {
  * A closed union rather than free-form strings so the frontend can switch on
  * it exhaustively and gain a compile error when a new event type appears —
  * which is the whole point of emitting events rather than polling state.
+ *
+ * Phase 4 added the three `tool.*` members. They are distinct from the
+ * `step.*` members that bracket them because a step and its tool call are not
+ * the same thing: a step can fail because a tool was refused, and an operator
+ * reading the log needs to see the refusal and the step failure as the two
+ * separate facts they are.
  */
 export type AgentEventType =
   | "execution.created"
@@ -229,6 +352,9 @@ export type AgentEventType =
   | "step.completed"
   | "step.failed"
   | "step.skipped"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
   | "execution.evaluating"
   | "execution.completed"
   | "execution.failed"
@@ -301,15 +427,37 @@ export interface AgentResult {
  * What the engine can currently do, readable without starting a run.
  *
  * Reported before a run so the workspace can be honest up front rather than
- * only after a step fails. `registeredTools` is the field that matters in
- * Phase 3: it is empty, and saying so is the difference between a user
- * expecting research and a user understanding why a research step will be
- * refused.
+ * only after a step fails. `registeredTools` was empty in Phase 3 and is not
+ * any more: it now lists the tools the run will actually be able to call, which
+ * is the difference between a user expecting research and a user understanding
+ * why a research step will still be refused.
  */
 export interface EngineCapabilities {
   provider: ExecutionProvider | null;
-  /** Tool ids registered for a run. Empty in Phase 3, by design. */
+  /**
+   * Tool ids registered for a run, in registration order.
+   *
+   * Ids only, deliberately. The full metadata — descriptions, versions,
+   * capabilities — is served by `/api/tools`, so this stays a cheap field on a
+   * status panel rather than a second copy of the catalogue.
+   */
   registeredTools: string[];
   /** Present when the provider could not be resolved from the environment. */
   configurationError?: string;
+}
+
+/**
+ * The `/api/tools` response: what Orion can do, and what it may be permitted to
+ * do.
+ *
+ * Declared here rather than beside the service that produces it because the
+ * workspace renders it, and a client component must never import from
+ * `src/server/**` — that would pull the service, and everything it reaches,
+ * into the browser bundle. A wire shape belongs in the shared vocabulary for
+ * exactly this reason; `docs/ARCHITECTURE.md` §4 is the rule this follows.
+ */
+export interface ToolCatalog {
+  tools: Tool[];
+  /** Capabilities a run is granted. A tool requiring anything else is refused. */
+  grantedCapabilities: ToolCapability[];
 }

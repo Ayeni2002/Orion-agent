@@ -1,15 +1,18 @@
 # Orion — Architecture
 
-> **Status: Phase 3 (Agent engine).** The agent engine exists and runs: it plans an
-> objective, executes the plan, evaluates the outcome and returns a structured result.
-> What backs it is deliberately thin — a deterministic development adapter rather than
-> a real model, and an empty tool registry — so **no external research, browsing,
-> scraping or tool execution exists**. The database, memory, reports and deployment
-> described below under *future* **do not exist**. Sections record what is real and
-> what is not; nothing here claims a capability the code does not have.
+> **Status: Phase 4 (Tool system).** The agent engine exists and runs: it plans an
+> objective, executes the plan — calling real tools where a step names one —
+> evaluates the outcome and returns a structured result. What backs it is still
+> deliberately thin: a **deterministic development adapter** rather than a real
+> model, and a **catalogue holding exactly one tool**, a read-only text
+> measurement. So there is **no external research, browsing, scraping, or any
+> tool that reaches outside the process**. The database, memory and reports
+> described below under *future* **do not exist**. Sections record what is real
+> and what is not; nothing here claims a capability the code does not have.
 >
 > Read this alongside [`DEVELOPMENT_PHASES.md`](./DEVELOPMENT_PHASES.md), which says
-> which phase builds which part.
+> which phase builds which part, and [`TOOL_SYSTEM.md`](./TOOL_SYSTEM.md), which is
+> the reference for the tool layer this phase added.
 
 ## 1. Guiding principles
 
@@ -117,7 +120,7 @@ which is why they exist before the database does.
 **Implemented**, and the reason the project exists.
 
 ```
-goal → plan → execute → observe → evaluate → structured result
+request → validate → plan → execute → [ tool call ] → observe → evaluate → result
 ```
 
 Lives in `src/server/agent/`, which is real rather than reserved:
@@ -125,7 +128,8 @@ Lives in `src/server/agent/`, which is real rather than reserved:
 ```
 provider/     ModelProvider interface, the development adapter, a scripted test one
 planner/      objective → validated plan (Zod, plus a dependency-graph check)
-executor/     walks the plan, records observations, resolves tools
+executor/     walks the plan, records observations, calls tools through the tool layer
+tools/        the tool system — definitions, registry, executor, catalogue (see §7)
 evaluator/    computes the verdict, requests a narrative
 runtime/      state builder, append-only event log, process-local store, the runner
 errors.ts     AgentEngineError — an engine failure with a machine-readable code
@@ -134,6 +138,12 @@ errors.ts     AgentEngineError — an engine failure with a machine-readable cod
 **The lifecycle is assembled in one place** — `runtime/runner.ts`. Every stage below it
 is independently testable and knows nothing about the others; the runner is the only
 module that has to know the whole shape of a run.
+
+**A tool call is not a lifecycle status.** The bracketed stage in the diagram above is a
+thing a run does repeatedly inside one step-walking pass, not a state the run is in, so
+it has no `ExecutionStatus` of its own. It is visible where it actually happens: as
+`tool.started` / `tool.completed` / `tool.failed` events, as observations carrying
+`source: "tool"`, and as a receipt recorded on the step that made the call.
 
 **The runner never throws.** A failed run is a returned execution with
 `status: "failed"` and structured errors attached, because a caller needs the partial
@@ -155,9 +165,14 @@ error vocabulary with nothing that can raise it. Bounded execution, cost ceiling
 plan revision arrive with the phases that need them. There is also no scheduler and no
 background worker: a run completes inside the request that started it.
 
-The engine consumes and produces the Phase 1 types in `src/types/agent.ts`, which
-Phase 3 extended rather than replaced — `ExecutionState`, `Observation`, `AgentEvent`,
-`AgentExecution`, `StepStatus` and `ExecutionStatus` were added; nothing was removed.
+The engine consumes and produces the Phase 1 types in `src/types/agent.ts`, which later
+phases extended rather than replaced — `ExecutionState`, `Observation`, `AgentEvent`,
+`AgentExecution`, `StepStatus` and `ExecutionStatus` were added in Phase 3, and
+`ToolCapability`, `ToolInput`, `ToolOutput`, `ToolExecutionStatus` and `ToolCatalog` in
+Phase 4; nothing was removed. Phase 4 did reshape two of the Phase 1 types, `Tool` and
+`ToolExecution`, because nothing produced either of them yet and a tool system built
+around unproduced sketch vocabulary would have been built around a guess. That is recorded
+as a change rather than presented as an addition.
 
 ## 6. Model abstraction
 
@@ -208,30 +223,67 @@ test of whether this section's claims hold.
 
 ## 7. Tool system
 
-**The seam is implemented and the registry is empty.** No tool exists, and none is
-stubbed.
+**Implemented, with one tool in the catalogue.** The full reference — the vocabulary,
+the pipeline, the permission model and the procedure for adding a tool — is
+[`TOOL_SYSTEM.md`](./TOOL_SYSTEM.md). This section records the shape and the reasoning.
 
-`src/server/agent/executor/registry.ts` defines the `AgentTool` interface and a
-`ToolRegistry` with `register`, `resolve` and `list`. `createToolRegistry()` returns it
-empty, always.
+```
+src/server/agent/tools/
+  definition.ts          ToolDefinition, ToolExecutionContext, ToolReceipt, ToolPermission
+  registry.ts            ToolRegistry — register / get / has / list / canExecute
+  executor.ts            ToolExecutor — the only sanctioned way to call a tool
+  catalog.ts             the one file that decides which tools a run can call
+  builtin/
+    text-analysis.ts     text.analyze — the only tool that ships
+  testing.ts             a scripted tool, for tests only (not in the public barrel)
+```
 
-That emptiness is the point, not an omission. The engine's behaviour when a plan asks
-for a capability the runtime cannot supply is real behaviour that has to work: the step
-fails with `capability_unavailable`, the dependent steps are skipped, and the run
-reports exactly that. The planner requests `web.search` for objectives that ask for
-external information, and the honest answer it gets back is "not available in this
-build" — never invented findings. Building the tool ecosystem is a later phase.
+The path a call takes:
 
-Two constraints recorded when this was only a plan, both still the intent:
+```
+AgentRunner → AgentExecutor → ToolRegistry → ToolExecutor → Tool → Observation → Evaluator
+```
 
-- **Tools are declared, not hard-coded into the planner.** The planner selects from a
-  registry; adding a tool must not mean editing the planning logic. The registry is what
-  makes that true, and nothing in the planner names a tool.
-- **Tool execution is recorded.** `ToolExecution` exists so a run can be explained after
-  the fact. Nothing writes one yet, so it remains Phase 1 vocabulary awaiting a producer.
+**The five stages, in order, and the order is the control.** Resolve the tool (unknown →
+`capability_unavailable`); **check the permission** (refused → `tool_permission_denied`);
+**then** validate the input against the tool's schema (`invalid_tool_input`); execute (a
+throw becomes `tool_failed`); build the receipt. Permission is checked *before* validation
+on purpose — a tool the run may not use is refused without its schema ever consuming
+untrusted input.
 
-**Still absent:** every actual tool, input schemas for them, and a tool runtime that
-executes more than one call per step.
+**It always returns a receipt and never throws.** A failed call is data, not an exception:
+the run has to keep going, the step has to record what happened, and the evaluator has to
+be able to read it. One flaky tool must not be able to destroy an otherwise sound run.
+
+**Deny by default.** A run is created with `DEFAULT_TOOL_PERMISSION`, which grants
+`read_only` and nothing else. There is no "allow everything" constructor to reach for by
+accident, the permission is a *constructor* argument to `ToolExecutor` rather than a
+per-call parameter — so no caller can grant itself a capability — and the registry refuses
+to register a tool that declares no capabilities at all, because "declares nothing" would
+otherwise read as "needs nothing".
+
+**Tools are declared, not hard-coded into the planner.** The planner selects from a
+catalogue by id; adding a tool means adding a module, a test, and one line in `catalog.ts`.
+Nothing in the planner, the executor, the runner or the API names a tool.
+
+**Tool execution is recorded.** `ToolExecution` existed from Phase 1 with no producer;
+`ToolReceipt` extends it and the tool executor produces one per call — call identity, run
+identity, tool id and version, status, timestamps, the validated input, the output, and a
+structured error when there is one. It never carries a credential, an environment variable
+or a raw upstream payload, and none of those is reachable from inside a tool in the first
+place.
+
+**What the catalogue holds:** `text.analyze` and nothing else — a deterministic, read-only
+count of characters, words, sentences and paragraphs. It measures the text it is given and
+retrieves nothing.
+
+**Still absent:** web search, browser automation, scraping, external APIs, shell
+execution, code execution, filesystem access, database access, and any tool that reaches
+outside the process. `web.search` is still named by the planner and still unregistered, so
+the engine's `capability_unavailable` path is live behaviour rather than a memory of one.
+A step carries at most one `toolId`, so a run makes at most one tool call per step; a
+multi-call step is not supported. There is also no timeout handling — a tool call is
+awaited without a deadline, which is recorded as a gap rather than claimed as a feature.
 
 ## 8. Memory and state
 
@@ -262,11 +314,13 @@ beside the code they cover.
 The engine is tested at two levels, and the split is deliberate:
 
 - **Units** — plan validation (schema and dependency graph), the development adapter's
-  determinism, error conversion, the store's bound. Each asserts one rule.
+  determinism, the tool registry, the tool executor's pipeline, the text analysis tool's
+  counting rules, error conversion, the store's bound. Each asserts one rule.
 - **Integration** — `runtime/runner.test.ts` drives the whole lifecycle against a
   scripted provider: cancellation, a failing step, an unavailable capability, a
-  registered tool, planner failure, provider misconfiguration. These are the tests that
-  would catch a broken seam, because the scripted provider is a *different
+  registered tool, a tool-backed step end to end, a failed tool, a refused permission,
+  rejected tool input, planner failure, provider misconfiguration. These are the tests
+  that would catch a broken seam, because the scripted provider is a *different
   implementation* of `ModelProvider` from the development one — the engine cannot tell
   which it is talking to, which is exactly the property being verified.
 

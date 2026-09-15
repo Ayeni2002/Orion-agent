@@ -1,3 +1,4 @@
+import { TEXT_ANALYSIS_TOOL_ID } from "../tools/builtin/text-analysis";
 import type {
   ModelProvider,
   ModelProviderDescriptor,
@@ -21,6 +22,12 @@ import type {
  * carries that descriptor so the UI can say plainly which one ran. Replacing it
  * with a real provider is a change to `resolveModelProvider` and nothing else.
  *
+ * The one thing it does beyond emitting prose is propose a tool call: when the
+ * objective both asks for a text measurement and supplies the text, the
+ * skeleton gains a step naming `text.analyze` with that text as its input. The
+ * adapter proposes; it does not decide — the tool's own schema validates the
+ * input and `ToolExecutor` decides whether the run may make the call.
+ *
  * Determinism has one wrinkle worth stating: `createdAt`/`timestamp` values are
  * real clock reads, so two runs of the same objective differ in their
  * timestamps while their plans and step outputs are identical. Tests assert on
@@ -34,10 +41,11 @@ export const DEV_MODEL_ID = "orion-dev-deterministic";
  * The capability the planner requests when an objective calls for information
  * from outside Orion.
  *
- * Nothing registers this tool in Phase 3 — and that is the point. The engine's
+ * Still nothing registers this, and Phase 4 did not change that — the tool
+ * system arrived, but web search was explicitly out of its scope. The engine's
  * behaviour when a plan asks for a capability the runtime cannot supply is real
- * behaviour that has to work, and this is the honest way to exercise it:
- * the step fails with `capability_unavailable` and says so, rather than a
+ * behaviour that has to keep working, and this is the honest way to exercise
+ * it: the step fails with `capability_unavailable` and says so, rather than a
  * placeholder quietly returning invented "findings".
  */
 export const EXTERNAL_RESEARCH_CAPABILITY = "web.search";
@@ -55,6 +63,35 @@ const EXTERNAL_RESEARCH_TERMS = [
   "look up",
 ];
 
+/**
+ * Phrases that mean the objective wants a block of text measured.
+ *
+ * Phase 4's addition. The adapter may only propose the text analysis tool when
+ * the objective both asks for it and actually contains text to measure — see
+ * `extractAnalysableText`, which is why "how many words are in this sentence"
+ * does not produce a tool step: there is no supplied text, and inventing one
+ * would be fabrication.
+ */
+const TEXT_ANALYSIS_TERMS = [
+  "analyze this text",
+  "analyse this text",
+  "analyze the text",
+  "analyse the text",
+  "analyze the following",
+  "analyse the following",
+  "text analysis",
+  "word count",
+  "character count",
+  "sentence count",
+  "paragraph count",
+  "count the words",
+  "count the characters",
+  "count the sentences",
+  "count the paragraphs",
+  "how many words",
+  "how many characters",
+];
+
 /** Longest objective excerpt echoed into a step description. */
 const FOCUS_MAX_LENGTH = 120;
 
@@ -64,6 +101,7 @@ interface DevPlanStep {
   expectedOutput: string;
   dependsOn: number[];
   toolId?: string;
+  toolInput?: Record<string, unknown>;
 }
 
 /** Collapses whitespace and truncates, so a multi-line objective stays one readable line. */
@@ -80,6 +118,46 @@ function summarize(objective: string): string {
 function wantsExternalResearch(objective: string): boolean {
   const lower = objective.toLowerCase();
   return EXTERNAL_RESEARCH_TERMS.some((term) => lower.includes(term));
+}
+
+function wantsTextAnalysis(objective: string): boolean {
+  const lower = objective.toLowerCase();
+  return TEXT_ANALYSIS_TERMS.some((term) => lower.includes(term));
+}
+
+/**
+ * Pulls the text to measure out of the objective.
+ *
+ * Only two shapes are recognised, and both take the text from what the user
+ * actually wrote rather than generating any:
+ *
+ *   1. everything after the first colon — "Analyze this text: <the text>"
+ *   2. the first double-quoted run — 'Count the words in "Hello there."'
+ *
+ * Returns `undefined` when neither is present, and the caller then emits no
+ * tool-backed step at all. That is the important part: the alternative —
+ * measuring the objective text itself, or a placeholder — would be the adapter
+ * inventing its own input, and a tool result computed from invented input is
+ * indistinguishable to a reader from a real one.
+ */
+function extractAnalysableText(objective: string): string | undefined {
+  const colonIndex = objective.indexOf(":");
+
+  if (colonIndex !== -1) {
+    const afterColon = objective.slice(colonIndex + 1).trim();
+
+    if (afterColon.length > 0) {
+      return afterColon;
+    }
+  }
+
+  // Straight quotes first, then the typographic pair, so a text pasted from a
+  // word processor is still recognised.
+  const straight = /"([^"]+)"/.exec(objective);
+  const curly = /“([^”]+)”/.exec(objective);
+  const quoted = (straight ?? curly)?.[1]?.trim();
+
+  return quoted !== undefined && quoted.length > 0 ? quoted : undefined;
 }
 
 /**
@@ -113,6 +191,28 @@ function buildPlanSteps(objective: string): DevPlanStep[] {
       dependsOn: [1],
     },
   ];
+
+  // The text analysis branch. Emitted only when the objective asks for a
+  // measurement AND supplies the text to measure, so the tool step always
+  // carries real input the user wrote.
+  //
+  // Hung off step 2 like the research branch, and for the same reason: it is a
+  // leaf. Synthesis does not depend on it, so a refused or failed analysis
+  // degrades the result instead of cancelling the run.
+  if (wantsTextAnalysis(objective)) {
+    const text = extractAnalysableText(objective);
+
+    if (text !== undefined) {
+      steps.push({
+        description: "Measure the supplied text with the text analysis tool.",
+        expectedOutput:
+          "Character, word, sentence and paragraph counts for the supplied text.",
+        dependsOn: [2],
+        toolId: TEXT_ANALYSIS_TOOL_ID,
+        toolInput: { text },
+      });
+    }
+  }
 
   if (wantsExternalResearch(objective)) {
     steps.push({

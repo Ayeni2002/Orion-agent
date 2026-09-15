@@ -5,10 +5,12 @@
  * engine — services, routes, tests — import from here rather than reaching into
  * subdirectories, so the internal layout stays free to change.
  *
- * There is no web search, browser automation, scraping or external integration
- * anywhere behind this barrel, and no tool implementations at all. The tool
- * ecosystem is a later phase; see `executor/registry.ts` for what that means in
- * practice.
+ * Phase 4 gave the engine a tool system: a catalogue, a registry, a validating
+ * and permission-checking executor, and one real read-only tool. There is still
+ * no web search, browser automation, scraping or external integration anywhere
+ * behind this barrel — not by omission, but because the capability union those
+ * tools would have to declare has no member that could describe them. See
+ * `tools/index.ts` and `docs/TOOL_SYSTEM.md`.
  */
 
 export { AGENT_ID, runAgent } from "./runtime/runner";
@@ -23,10 +25,26 @@ export type {
 } from "./provider";
 
 export {
+  createDefaultToolRegistry,
   createToolRegistry,
+  DEFAULT_TOOL_PERMISSION,
+  defineTool,
+  MAX_ANALYSIS_CHARACTERS,
+  TEXT_ANALYSIS_TOOL_ID,
+  TEXT_ANALYSIS_TOOL_VERSION,
+  textAnalysisTool,
+  ToolExecutor,
+  ToolPermission,
   ToolRegistry,
-} from "./executor/registry";
-export type { AgentTool, ToolInvocationContext } from "./executor/registry";
+} from "./tools";
+export type {
+  ExecuteToolRequest,
+  TextAnalysisInput,
+  TextAnalysisOutput,
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolReceipt,
+} from "./tools";
 
 export { AgentEngineError, toAgentExecutionError } from "./errors";
 

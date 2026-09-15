@@ -11,7 +11,11 @@ import { createId, now } from "../ids";
 import { resolveModelProvider, type ModelProvider } from "../provider";
 import { createPlan } from "../planner";
 import { executePlan } from "../executor";
-import { createToolRegistry, type ToolRegistry } from "../executor/registry";
+import {
+  createDefaultToolRegistry,
+  ToolExecutor,
+  type ToolRegistry,
+} from "../tools";
 import { evaluateExecution } from "../evaluator";
 import { EventLog, type EventSink } from "./events";
 import { ExecutionStateBuilder } from "./state";
@@ -24,6 +28,18 @@ import { ExecutionStateBuilder } from "./state";
  * testable and knows nothing about the others; this module is where they are
  * wired together, which is why it is also the only module that has to know the
  * whole shape of a run.
+ *
+ * Phase 4 inserted the tool call into the middle of that sequence:
+ *
+ *   request → validate → plan → execute → [ tool call ] → observe → evaluate
+ *
+ * The bracketed stage is not a new execution status, and deliberately so. A run
+ * may make any number of tool calls inside one step-walking pass, and
+ * `ExecutionStatus` describes the run, not the individual calls — modelling
+ * each call as a status would make the status mean "the run is doing a thing it
+ * does repeatedly". The calls are visible where they actually happen: as
+ * `tool.*` events in the log, as observations with `source: "tool"`, and as
+ * receipts on the steps that made them.
  *
  * The runner is the boundary of the engine. It returns data and never throws:
  * a failed run is a returned execution with `status: "failed"` and structured
@@ -53,8 +69,21 @@ export interface RunAgentParams {
   objective: string;
   /** Injected by tests. Resolved from the environment when absent. */
   provider?: ModelProvider;
-  /** Injected by tests. An empty registry otherwise. */
+  /**
+   * Injected by tests. The default catalogue otherwise.
+   *
+   * A test that wants the `capability_unavailable` path passes
+   * `createToolRegistry()` — empty — which is exactly how Phase 3 exercised it.
+   */
   registry?: ToolRegistry;
+  /**
+   * Injected by tests that need a different permission grant.
+   *
+   * Takes precedence over `registry` when both are given, since the executor
+   * already holds the registry it will use. A run built without this gets
+   * `DEFAULT_TOOL_PERMISSION`, which grants `read_only` and nothing else.
+   */
+  tools?: ToolExecutor;
   /** Checked between steps. Absent means the run cannot be cancelled. */
   isCancelled?: () => boolean;
   /** Observes events as they are emitted. No sink in Phase 3. */
@@ -136,7 +165,8 @@ function finalise({
 export async function runAgent({
   objective,
   provider: injectedProvider,
-  registry = createToolRegistry(),
+  registry = createDefaultToolRegistry(),
+  tools,
   isCancelled,
   onEvent,
 }: RunAgentParams): Promise<AgentExecution> {
@@ -144,6 +174,11 @@ export async function runAgent({
   const taskId = createId("task");
   const events = new EventLog(executionId, onEvent);
   const state = new ExecutionStateBuilder(executionId, objective);
+
+  // Built once per run, holding this run's registry and its permission. Nothing
+  // in the request can reach either: the objective is the only value a caller
+  // supplies, and it never becomes a tool id or a grant.
+  const toolExecutor = tools ?? new ToolExecutor(registry);
 
   const task: AgentTask = {
     id: taskId,
@@ -197,7 +232,7 @@ export async function runAgent({
       task,
       objective,
       provider: resolved,
-      registry,
+      tools: toolExecutor,
       state,
       events,
       isCancelled,

@@ -18,6 +18,8 @@ import type {
   AgentExecution,
   ExecutionStatus,
   StepStatus,
+  ToolExecution,
+  ToolExecutionStatus,
 } from "@/types/agent";
 
 /**
@@ -33,6 +35,12 @@ import type {
  * by the deterministic development adapter, the panel says so next to the
  * results — the run is a genuine engine execution, and saying which provider
  * produced it is what keeps it from reading as model output.
+ *
+ * Phase 4 added the tool block inside each step. It renders `step.execution`,
+ * the receipt the tool layer recorded, which is the same object the engine
+ * stored — so the tool a step used, whether it succeeded, how long it took and
+ * what it returned are all facts about what happened rather than a timeline the
+ * UI animated while waiting.
  */
 
 const EXECUTION_PRESENTATION: Record<
@@ -59,8 +67,43 @@ const STEP_PRESENTATION: Record<
   skipped: { tone: "warning", label: "Skipped" },
 };
 
+const TOOL_PRESENTATION: Record<
+  ToolExecutionStatus,
+  { tone: StatusTone; label: string }
+> = {
+  running: { tone: "active", label: "Running" },
+  succeeded: { tone: "success", label: "Completed" },
+  failed: { tone: "error", label: "Failed" },
+};
+
 function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleTimeString();
+}
+
+/**
+ * How long a tool call took, from the receipt's own timestamps.
+ *
+ * Returns undefined rather than a guess when either end is missing or unparseable
+ * — the panel shows only what the engine recorded. A negative span means the
+ * clock moved between the two reads, which is not a duration worth printing.
+ */
+function formatDuration(
+  startedAt?: string,
+  finishedAt?: string,
+): string | undefined {
+  if (startedAt === undefined || finishedAt === undefined) {
+    return undefined;
+  }
+
+  const elapsedMs = Date.parse(finishedAt) - Date.parse(startedAt);
+
+  if (Number.isNaN(elapsedMs) || elapsedMs < 0) {
+    return undefined;
+  }
+
+  return elapsedMs < 1000
+    ? `${elapsedMs} ms`
+    : `${(elapsedMs / 1000).toFixed(2)} s`;
 }
 
 /** Renders a structured value the engine produced, without interpreting it. */
@@ -69,6 +112,52 @@ function StructuredValue({ value }: { value: unknown }) {
     <pre className="overflow-x-auto rounded-md border border-border bg-muted px-3 py-2 text-xs">
       {JSON.stringify(value, null, 2)}
     </pre>
+  );
+}
+
+/** The tool call a step made, if it made one. */
+function ToolReceiptBlock({ execution }: { execution: ToolExecution }) {
+  const presentation = TOOL_PRESENTATION[execution.status];
+  const duration = formatDuration(execution.startedAt, execution.finishedAt);
+
+  return (
+    <div className="space-y-2 rounded-md border border-border px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs">
+          <span className="text-muted-foreground">Tool</span>{" "}
+          <code className="font-mono">{execution.toolId}</code>
+          {execution.toolVersion === undefined ? null : (
+            <span className="text-muted-foreground">
+              {" "}
+              v{execution.toolVersion}
+            </span>
+          )}
+        </p>
+
+        <StatusIndicator
+          tone={presentation.tone}
+          label={presentation.label}
+          className="shrink-0"
+        />
+      </div>
+
+      {duration === undefined ? null : (
+        <p className="text-xs text-muted-foreground">Took {duration}</p>
+      )}
+
+      {execution.error === undefined ? null : (
+        <p className="text-xs">
+          <span className="font-mono text-muted-foreground">
+            {execution.error.code}
+          </span>{" "}
+          {execution.error.message}
+        </p>
+      )}
+
+      {execution.output === undefined ? null : (
+        <StructuredValue value={execution.output} />
+      )}
+    </div>
   );
 }
 
@@ -173,7 +262,12 @@ export function ExecutionPanel({
                           </p>
                         )}
 
-                        {step.toolId === undefined ? null : (
+                        {step.execution !== undefined ? (
+                          <ToolReceiptBlock execution={step.execution} />
+                        ) : step.toolId === undefined ? null : (
+                          // No receipt yet: the run ended before this step
+                          // reached its tool call, so all that is known is what
+                          // the plan asked for.
                           <p className="text-xs text-muted-foreground">
                             Requires capability{" "}
                             <code className="font-mono">{step.toolId}</code>

@@ -17,5 +17,10 @@ export type {
   TaskStatus,
   TaskStep,
   Tool,
+  ToolCapability,
+  ToolCatalog,
   ToolExecution,
+  ToolExecutionStatus,
+  ToolInput,
+  ToolOutput,
 } from "./agent";

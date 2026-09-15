@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { AgentExecution, EngineCapabilities } from "@/types/agent";
+import type {
+  AgentExecution,
+  EngineCapabilities,
+  ToolCatalog,
+} from "@/types/agent";
 
 import { ExecutionPanel } from "./execution-panel";
 import { ObjectiveForm } from "./objective-form";
@@ -51,6 +55,43 @@ function readExecution(payload: unknown): AgentExecution | undefined {
   return undefined;
 }
 
+/**
+ * What the workspace says about the tool catalogue before a run is started.
+ *
+ * Read from `/api/tools` rather than assumed, so the notice cannot fall out of
+ * step with what the engine will actually do. The empty case is kept: it is the
+ * truthful rendering of a build with no tools, and it is the state Phase 3
+ * shipped in.
+ */
+function ToolCatalogNotice({ catalog }: { catalog: ToolCatalog }) {
+  if (catalog.tools.length === 0) {
+    return (
+      <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+        No tools are registered in this build. Orion will plan and run reasoning
+        steps, but any step needing a capability — web search, for instance —
+        will be reported as unavailable rather than carried out.
+      </p>
+    );
+  }
+
+  return (
+    <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+      <span className="font-medium text-foreground">Registered tools:</span>{" "}
+      {catalog.tools.map((tool, index) => (
+        <span key={tool.id}>
+          {index === 0 ? null : ", "}
+          {tool.name}{" "}
+          <code className="font-mono text-xs">{tool.id}</code>
+        </span>
+      ))}
+      . Orion calls these while executing a plan. Steps needing a capability
+      outside this set — web search, for instance — are reported as unavailable
+      rather than carried out, and a tool requiring a capability the run was not
+      granted is refused rather than run.
+    </p>
+  );
+}
+
 export function WorkspaceConsole() {
   const [execution, setExecution] = useState<AgentExecution | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,6 +99,7 @@ export function WorkspaceConsole() {
   const [capabilities, setCapabilities] = useState<EngineCapabilities | null>(
     null,
   );
+  const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
 
   // Fetched once, in the browser. Deliberately not read during the server
   // render: a static build would bake in the build machine's environment, which
@@ -90,7 +132,32 @@ export function WorkspaceConsole() {
       }
     }
 
+    async function loadToolCatalog() {
+      try {
+        const response = await fetch("/api/tools");
+
+        if (!response.ok) {
+          return;
+        }
+
+        const payload: unknown = await response.json();
+
+        if (
+          active &&
+          typeof payload === "object" &&
+          payload !== null &&
+          "tools" in payload
+        ) {
+          setCatalog(payload as ToolCatalog);
+        }
+      } catch {
+        // Same as above: the catalogue notice is informational, and its absence
+        // must not stop a run from being started.
+      }
+    }
+
     void loadCapabilities();
+    void loadToolCatalog();
 
     return () => {
       active = false;
@@ -138,13 +205,6 @@ export function WorkspaceConsole() {
 
   const configurationError = capabilities?.configurationError;
 
-  // Read through the optional chain once, rather than relying on the JSX
-  // conditions below to narrow `capabilities` for each other.
-  const hasNoTools =
-    capabilities !== null &&
-    configurationError === undefined &&
-    capabilities.registeredTools.length === 0;
-
   return (
     <div className="space-y-6">
       {configurationError === undefined ? null : (
@@ -157,14 +217,7 @@ export function WorkspaceConsole() {
         </p>
       )}
 
-      {hasNoTools ? (
-        <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-          No tools are registered in this build. Orion will plan and run
-          reasoning steps, but any step needing an external capability — web
-          search, for instance — will be reported as unavailable rather than
-          carried out.
-        </p>
-      ) : null}
+      {catalog === null ? null : <ToolCatalogNotice catalog={catalog} />}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card>

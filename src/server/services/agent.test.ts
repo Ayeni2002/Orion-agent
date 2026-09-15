@@ -203,10 +203,14 @@ describe("getEngineCapabilities", () => {
     expect(capabilities.configurationError).toBeUndefined();
   });
 
-  // Phase 3 registers no tools. Saying so up front is what lets the workspace
-  // warn before a run rather than only after a step is refused.
-  it("reports that no tools are registered", () => {
-    expect(getEngineCapabilities().registeredTools).toStrictEqual([]);
+  // Phase 4 gave the engine a catalogue, so this now names it. Reporting an
+  // empty list would be a claim about the build that is no longer true — and
+  // saying what is registered up front is what lets the workspace warn before a
+  // run rather than only after a step is refused.
+  it("reports the registered tools", () => {
+    expect(getEngineCapabilities().registeredTools).toStrictEqual([
+      "text.analyze",
+    ]);
   });
 
   it("reports a configuration problem as data rather than throwing", () => {

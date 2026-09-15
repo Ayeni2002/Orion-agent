@@ -16,7 +16,7 @@ shape of the parts marked *not implemented* here.
 | 1 | Foundation | **Complete** |
 | 2 | Application shell | **Complete** |
 | 3 | Agent engine | **Complete** |
-| 4 | Tool system | Not started |
+| 4 | Tool system | **Complete** |
 | 5 | Database & persistence | Not started |
 | 6 | Real model provider | Not started |
 | 7 | Memory & state | Not started |
@@ -42,8 +42,11 @@ Three consequences worth recording:
 - The original **Phase 3 (Model provider)** is split. The *interface*, its resolution,
   and a deterministic development adapter were built as part of Phase 3. A real external
   adapter is Phase 6 and remains entirely unbuilt.
-- The original **Phase 4 (Tool system)** is now Phase 4 with its registry already in
-  place and empty — see below.
+- The original **Phase 4 (Tool system)** was built as Phase 4, against the registry seam
+  Phase 3 left in place. That seam turned out to need *evolving* rather than filling:
+  Phase 3's `AgentTool` and `executor/registry.ts` were replaced by the fuller
+  `ToolDefinition` and `tools/registry.ts`, and the old registry was deleted rather than
+  kept alongside. See the Phase 4 section for why.
 - The database moved after the engine. Task state is currently held in process memory,
   which `ARCHITECTURE.md` §10 records as a known deviation with its consequences.
 
@@ -134,21 +137,74 @@ that now drives it.
 
 ---
 
-## Phase 4 — Tool system
+## Phase 4 — Tool system ✅
 
 **Goal:** the agent can do something other than talk.
 
-The registry seam landed in Phase 3 and is empty; this phase fills it.
+Delivered:
 
-- A small set of real tools — starting with the ones the research workflow needs.
-- Input schemas per tool, validated before execution, since tool input originates from
-  a model and is therefore untrusted.
-- A runtime that executes a tool call and records a `ToolExecution` for the run. That
-  type exists and currently has no producer.
-- Errors from a tool returned to the engine as observations rather than thrown past it.
+- **Tool domain model** — `ToolCapability`, `ToolInput`, `ToolOutput`,
+  `ToolExecutionStatus` and `ToolCatalog` added to `src/types/agent.ts`; `Tool` and
+  `ToolExecution` reshaped. The executable half of the vocabulary (`ToolDefinition`,
+  `ToolExecutionContext`, `ToolReceipt`, `ToolPermission`) lives in
+  `tools/definition.ts`, because a Zod schema and a function do not survive a JSON
+  round-trip and so cannot live in the domain-types module.
+- **Tool registry** (`tools/registry.ts`) — `register` / `get` / `has` / `list` /
+  `canExecute` / `ids`. It refuses a duplicate id and refuses a tool that declares no
+  capabilities. `canExecute` requires the granted capabilities *and* that the registry
+  actually holds the definition.
+- **Tool execution engine** (`tools/executor.ts`) — resolve, check permission, validate
+  input, execute, build a receipt. It always returns a receipt and **never throws**: a
+  failed call is data, not an exception.
+- **Execution context** — ids, objective, start time and granted capabilities. No
+  filesystem, shell, environment, database or ambient network. A tool's dependencies must
+  be passed to it explicitly.
+- **Permissions** — `read_only`, `network`, `data_access`, `user_action`. **Deny by
+  default**: a run is created granting `read_only` only, the permission is a constructor
+  argument to the executor rather than a per-call parameter, and permission is checked
+  *before* input validation.
+- **First real tool** — `text.analyze`: a deterministic, read-only count of characters,
+  words, sentences and paragraphs, with a bounded input and documented counting rules.
+- **Receipts** — `ToolReceipt extends ToolExecution`, recording ids, tool version,
+  status, timestamps, the validated input, the output and a structured error. No secret,
+  credential or environment variable is reachable from inside a tool, so none can appear.
+- **Agent engine integration** — the `AgentRunner` remains the orchestrator; the sequence
+  is now `request → validate → plan → execute → tool call → observe → evaluate → result`.
+  New events `tool.started` / `tool.completed` / `tool.failed`; observations carry
+  `source` and `toolId` as first-class fields. A tool call is deliberately **not** an
+  `ExecutionStatus`: it is a thing a run does repeatedly, not a state the run is in.
+- **Failure handling** — unknown tool (`capability_unavailable`), refused permission
+  (`tool_permission_denied`), invalid input (`invalid_tool_input`) and a throwing tool
+  (`tool_failed`) are each recorded as a structured error on the step and, where
+  applicable, in the run's error list. A failed tool fails its step, not the application.
+- **API** — `GET /api/tools` returns registered tool metadata and the granted
+  capabilities. It exposes no `execute` function, no schema, and no execution surface.
+- **Workspace integration** — the execution panel renders each step's tool, its receipt
+  (status, version, duration, structured output or error), and the observation that came
+  back. The catalogue notice reads `/api/tools` rather than assuming what is registered.
+- **Tests** — registry, executor pipeline, permission enforcement, the text analysis
+  rules, planner handling of tool input, the development adapter's tool branch, the
+  catalogue service, and tool-backed steps end to end through `runAgent`.
 
-**Depends on Phase 3:** the registry, the `AgentTool` interface and the
-`capability_unavailable` path all exist and are waiting for an implementation.
+**Two changes to Phase 3, recorded rather than glossed over.**
+
+Phase 3's `AgentTool` interface and `executor/registry.ts` were **replaced**, and the old
+file deleted. Keeping both would have meant two registries, two notions of what a tool
+is, and a rule nobody could state about which one a new tool belongs in. `ToolExecution`
+also existed from Phase 1 with **no producer** — nothing wrote one — so building the tool
+system around unproduced sketch vocabulary would have meant building it around a guess.
+
+**Explicitly not delivered, and not to be described as working:** web search, browsing,
+scraping, browser automation, any external API or account integration, email or social
+integration, shell execution, code execution, filesystem or database access from a tool,
+tool timeouts, multi-call steps, long-term memory, vector storage, report generation,
+background workers, queues, multi-agent collaboration, and any tool marketplace. A step
+needing an external capability is still *reported as unavailable*, which remains the
+honest outcome.
+
+**Depends on Phase 3:** the runner, the plan-walking executor, the `capability_unavailable`
+path, and the planned step's `toolId` field all existed and are now backed by a real
+implementation.
 
 ---
 

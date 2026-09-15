@@ -11,12 +11,13 @@ import { createId, now } from "../ids";
 import { parseModelJson, type ModelProvider } from "../provider";
 import type { EventLog } from "../runtime/events";
 import type { ExecutionStateBuilder } from "../runtime/state";
-import type { ToolRegistry } from "./registry";
+import { receiptError } from "../tools";
+import type { ToolExecutor, ToolReceipt } from "../tools";
 
 /**
  * The executor: walks an approved plan and records what actually happened.
  *
- * Three decisions worth stating, because each is a real behavioural choice
+ * Four decisions worth stating, because each is a real behavioural choice
  * rather than an implementation detail.
  *
  * **Steps run in index order.** The planner guarantees every dependency points
@@ -33,6 +34,13 @@ import type { ToolRegistry } from "./registry";
  * flight is not interrupted — the provider interface has no way to abort one,
  * and pretending otherwise would misreport what happened. Remaining steps are
  * skipped and the run is marked cancelled.
+ *
+ * **A step that names a tool goes through `ToolExecutor`, and only that way.**
+ * Phase 3 called `tool.run()` here directly, which meant validation,
+ * permissions and recording would each have had to be re-implemented at this
+ * call site. They are not implemented here at all: this file asks the tool
+ * layer for a receipt and records it. That is what keeps the executor free of
+ * per-tool knowledge as the catalogue grows.
  */
 
 const STEP_INSTRUCTION =
@@ -43,7 +51,8 @@ export interface ExecutePlanParams {
   task: AgentTask;
   objective: string;
   provider: ModelProvider;
-  registry: ToolRegistry;
+  /** The tool runtime for this run. Validates, permits and records every call. */
+  tools: ToolExecutor;
   state: ExecutionStateBuilder;
   events: EventLog;
   /** Checked between steps. Absent means the run cannot be cancelled. */
@@ -79,48 +88,106 @@ function markStep(
   step.updatedAt = now();
 }
 
+/**
+ * Records a terminal success.
+ *
+ * Both terminal paths go through a helper like this one rather than being
+ * written inline, because there are now two ways a step can finish — a model
+ * answered, or a tool ran — and the four things that must happen together
+ * (step status, state, observation, event) are easy to keep in step in one
+ * place and easy to let drift in two.
+ */
+function recordCompletion(
+  step: TaskStep,
+  observation: Observation,
+  state: ExecutionStateBuilder,
+  events: EventLog,
+): void {
+  markStep(step, "completed", "succeeded");
+  state.completeStep(step.id, observation);
+  events.emit("step.completed", observation.message, { stepId: step.id });
+}
+
+/** Records a terminal failure and the structured error that explains it. */
+function recordFailure(
+  step: TaskStep,
+  observation: Observation,
+  error: AgentExecutionError,
+  state: ExecutionStateBuilder,
+  events: EventLog,
+): void {
+  markStep(step, "failed", "failed");
+  state.finishStep(step.id, "failed", observation, error);
+  events.emit("step.failed", observation.message, {
+    stepId: step.id,
+    data: { code: error.code },
+  });
+}
+
+/**
+ * Builds the observation for a tool call.
+ *
+ * `source` and `toolId` are set as first-class fields rather than buried in
+ * `metadata`, so the evaluator and the UI can tell a measurement apart from a
+ * generated claim without inspecting the output's shape. The receipt itself is
+ * not duplicated here — it is already on `step.execution`, and the `stepId`
+ * that both carry is what links them.
+ */
+function toolObservation(step: TaskStep, receipt: ToolReceipt): Observation {
+  const succeeded = receipt.status === "succeeded";
+
+  return {
+    id: createId("obs"),
+    stepId: step.id,
+    timestamp: now(),
+    status: succeeded ? "completed" : "failed",
+    message: `${succeeded ? "Completed" : "Failed"} with ${receipt.toolId}: ${step.description}`,
+    ...(receipt.output === undefined ? {} : { output: receipt.output }),
+    ...(receipt.error === undefined
+      ? {}
+      : { error: describeError(receipt.error) }),
+    source: "tool",
+    toolId: receipt.toolId,
+  };
+}
+
+/**
+ * How long a tool call took, from the receipt's own timestamps.
+ *
+ * Both ends are optional on the stored shape, so this returns `undefined`
+ * rather than a number it had to guess at. A negative span means the clock
+ * moved between the two reads, which is not a duration worth reporting either.
+ */
+function receiptDurationMs(receipt: ToolReceipt): number | undefined {
+  const { startedAt, finishedAt } = receipt;
+
+  if (startedAt === undefined || finishedAt === undefined) {
+    return undefined;
+  }
+
+  const elapsedMs = Date.parse(finishedAt) - Date.parse(startedAt);
+
+  return Number.isNaN(elapsedMs) || elapsedMs < 0 ? undefined : elapsedMs;
+}
+
 interface InvokeStepParams {
   step: TaskStep;
   objective: string;
   provider: ModelProvider;
-  registry: ToolRegistry;
-  executionId: string;
 }
 
 /**
- * Runs one step and returns what it produced.
+ * Runs one non-tool step and returns what the model produced.
  *
  * Throws on any failure; the caller turns that into an observation and an error
  * entry. A step either returns output or it does not — there is no "succeeded
  * with an error" middle state, which keeps the caller's branching honest.
  */
-async function invokeStep({
+async function invokeModelStep({
   step,
   objective,
   provider,
-  registry,
-  executionId,
 }: InvokeStepParams): Promise<Record<string, unknown>> {
-  if (step.toolId !== undefined) {
-    const tool = registry.resolve(step.toolId);
-
-    if (tool === undefined) {
-      // The expected path in Phase 3: the registry is empty, so any step
-      // naming a capability lands here. Reported as unavailable — this is the
-      // honest answer, and the alternative (a placeholder returning invented
-      // findings) would be a fabrication presented as research.
-      throw new AgentEngineError(
-        "capability_unavailable",
-        `This step requires the "${step.toolId}" capability, which is not available in this build.`,
-        { stepId: step.id, details: { toolId: step.toolId } },
-      );
-    }
-
-    // Input would come from the planner and is therefore untrusted; a real tool
-    // must validate it. No tool is registered in Phase 3, so this is a seam.
-    return tool.run({}, { executionId, stepId: step.id, objective });
-  }
-
   const response = await provider.generate({
     operation: "execute_step",
     instruction: STEP_INSTRUCTION,
@@ -149,11 +216,78 @@ async function invokeStep({
   };
 }
 
+/**
+ * Runs a step that names a tool.
+ *
+ * The tool layer never throws, so this is an ordinary branch rather than a
+ * try/catch: it inspects the receipt and records the outcome the receipt
+ * reports. A failed tool call fails its step — which skips its dependents and
+ * lets the run report exactly that — but it cannot take the run down with it.
+ */
+async function runToolStep(
+  step: TaskStep,
+  toolId: string,
+  params: {
+    objective: string;
+    tools: ToolExecutor;
+    state: ExecutionStateBuilder;
+    events: EventLog;
+  },
+): Promise<void> {
+  const { objective, tools, state, events } = params;
+
+  events.emit("tool.started", `Calling ${toolId}: ${step.description}`, {
+    stepId: step.id,
+    data: { toolId },
+  });
+
+  const receipt = await tools.execute({
+    toolId,
+    // Untrusted, exactly as the planner proposed it. Validated inside.
+    input: step.toolInput,
+    executionId: state.executionId,
+    taskId: step.taskId,
+    stepId: step.id,
+    objective,
+  });
+
+  // Recorded on the step whether the call succeeded or failed. A receipt for a
+  // call that went wrong is the one most worth keeping.
+  step.execution = receipt;
+
+  const observation = toolObservation(step, receipt);
+  const durationMs = receiptDurationMs(receipt);
+
+  events.emit(
+    receipt.status === "succeeded" ? "tool.completed" : "tool.failed",
+    observation.message,
+    {
+      stepId: step.id,
+      data: {
+        toolId: receipt.toolId,
+        toolVersion: receipt.toolVersion,
+        status: receipt.status,
+        // Omitted rather than reported as a placeholder when the receipt is
+        // missing a timestamp: an event log that says "0 ms" for an unknown
+        // duration is saying something it does not know.
+        ...(durationMs === undefined ? {} : { durationMs }),
+      },
+    },
+  );
+
+  if (receipt.status === "succeeded") {
+    recordCompletion(step, observation, state, events);
+    return;
+  }
+
+  recordFailure(step, observation, receiptError(receipt), state, events);
+}
+
 export async function executePlan({
   task,
   objective,
   provider,
-  registry,
+  tools,
   state,
   events,
   isCancelled,
@@ -217,14 +351,18 @@ export async function executePlan({
       stepId: step.id,
     });
 
+    // Read once, so the two branches below each narrow from a stable value
+    // rather than from the optional field itself.
+    const toolId = step.toolId;
+
+    if (toolId !== undefined) {
+      await runToolStep(step, toolId, { objective, tools, state, events });
+      statusByStepId.set(step.id, step.status);
+      continue;
+    }
+
     try {
-      const output = await invokeStep({
-        step,
-        objective,
-        provider,
-        registry,
-        executionId: state.executionId,
-      });
+      const output = await invokeModelStep({ step, objective, provider });
 
       const observation: Observation = {
         id: createId("obs"),
@@ -233,12 +371,11 @@ export async function executePlan({
         status: "completed",
         message: `Completed: ${step.description}`,
         output,
+        source: "engine",
       };
 
-      markStep(step, "completed", "succeeded");
-      state.completeStep(step.id, observation);
+      recordCompletion(step, observation, state, events);
       statusByStepId.set(step.id, "completed");
-      events.emit("step.completed", observation.message, { stepId: step.id });
     } catch (error) {
       // Attributed to this step even when the error came from a bug rather than
       // a deliberate engine error. `toAgentExecutionError` replaces the message
@@ -259,15 +396,11 @@ export async function executePlan({
         status: "failed",
         message: `Failed: ${step.description}`,
         error: describeError(executionError),
+        source: "engine",
       };
 
-      markStep(step, "failed", "failed");
-      state.finishStep(step.id, "failed", observation, executionError);
+      recordFailure(step, observation, executionError, state, events);
       statusByStepId.set(step.id, "failed");
-      events.emit("step.failed", observation.message, {
-        stepId: step.id,
-        data: { code: executionError.code },
-      });
     }
   }
 

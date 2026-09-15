@@ -6,7 +6,7 @@ import type {
 } from "@/types/agent";
 import { objectiveSchema } from "@/lib/validation/objective";
 import {
-  createToolRegistry,
+  createDefaultToolRegistry,
   getExecution,
   listExecutions,
   resolveModelProvider,
@@ -36,15 +36,20 @@ import { ServiceError } from "../errors";
  * Reports a configuration failure as data rather than throwing: this feeds a
  * status panel, and a status panel that 500s tells the user nothing. The failure
  * is returned so the UI can say what is wrong.
+ *
+ * Reads the real catalogue rather than an empty registry, so `registeredTools`
+ * says what a run will actually be able to call. It listed nothing in Phase 3
+ * and that was true then; reporting the same now would be a claim about the
+ * build that is no longer accurate.
  */
 export function getEngineCapabilities(): EngineCapabilities {
   try {
     const provider = resolveModelProvider();
-    const registry = createToolRegistry();
+    const registry = createDefaultToolRegistry();
 
     return {
       provider: { ...provider.descriptor },
-      registeredTools: registry.list().map((tool) => tool.id),
+      registeredTools: registry.ids(),
     };
   } catch (error) {
     return {

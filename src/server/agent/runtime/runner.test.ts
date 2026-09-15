@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { AgentEventType, ExecutionStatus } from "@/types/agent";
 import { AgentEngineError } from "../errors";
-import { createToolRegistry } from "../executor/registry";
+import {
+  createToolRegistry,
+  TEXT_ANALYSIS_TOOL_ID,
+  TEXT_ANALYSIS_TOOL_VERSION,
+  ToolExecutor,
+  ToolPermission,
+} from "../tools";
+// Test-only helper, deliberately outside the module's public barrel — the same
+// arrangement `provider/stub-provider.ts` uses.
+import { createTestTool, TEST_TOOL_ID, type TestToolOptions } from "../tools/testing";
 import {
   createStubModelProvider,
   scriptedPlan,
@@ -181,12 +191,9 @@ describe("runAgent", () => {
   it("invokes a registered tool and records its output", async () => {
     const registry = createToolRegistry();
 
-    registry.register({
-      id: "test.echo",
-      name: "Echo",
-      description: "Returns a fixed payload.",
-      run: () => Promise.resolve({ echoed: true }),
-    });
+    registry.register(
+      createTestTool({ execute: () => Promise.resolve({ echoed: true }) }),
+    );
 
     const provider = createStubModelProvider({
       script: {
@@ -195,7 +202,7 @@ describe("runAgent", () => {
             {
               description: "Use the echo capability.",
               expectedOutput: "An echo.",
-              toolId: "test.echo",
+              toolId: TEST_TOOL_ID,
             },
           ],
         }),
@@ -352,5 +359,293 @@ describe("runAgent", () => {
     await expect(
       runAgent({ objective: OBJECTIVE, provider }),
     ).resolves.toBeDefined();
+  });
+
+  /**
+   * Phase 4 — the engine calling a tool.
+   *
+   * The stub provider stands in for the planner, so these tests choose the plan
+   * directly. What they exercise is everything downstream of it: the executor's
+   * tool branch, the tool layer's validation and permission checks, and the
+   * observation, receipt and events that come back out.
+   */
+  describe("tool-backed steps", () => {
+    /** A script whose single step names a tool, with whatever input is given. */
+    function toolScript(toolId: string, toolInput?: unknown): StubProviderScript {
+      return {
+        plan: () => ({
+          steps: [
+            {
+              description: "Use the echo capability.",
+              expectedOutput: "An echo.",
+              toolId,
+              ...(toolInput === undefined ? {} : { toolInput }),
+            },
+          ],
+        }),
+        execute_step: () => ({ produced: "something" }),
+        evaluate: () => ({ summary: "A summary of the run." }),
+      };
+    }
+
+    function registryWith(
+      options: TestToolOptions = {},
+    ): ReturnType<typeof createToolRegistry> {
+      const registry = createToolRegistry();
+      registry.register(createTestTool(options));
+
+      return registry;
+    }
+
+    it("records a receipt on the step that made the call", async () => {
+      const registry = registryWith({
+        execute: () => Promise.resolve({ echoed: true }),
+      });
+      const provider = createStubModelProvider({
+        script: toolScript(TEST_TOOL_ID),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+
+      const step = execution.task.steps[0];
+      const receipt = step?.execution;
+
+      expect(step?.status).toBe("completed");
+      expect(receipt?.status).toBe("succeeded");
+      expect(receipt?.toolId).toBe(TEST_TOOL_ID);
+      expect(receipt?.toolVersion).toBe("1.0.0");
+      // The link between the two records. `step.execution` is the receipt the
+      // tool layer returned, stored as-is, not a summary of it.
+      expect(receipt?.stepId).toBe(step?.id);
+      expect(receipt?.id).toMatch(/^tool_/);
+      expect(receipt?.output).toStrictEqual({ echoed: true });
+    });
+
+    it("attributes the observation to the tool rather than the engine", async () => {
+      const registry = registryWith({
+        id: "analysis.tool",
+        execute: () => Promise.resolve({ measured: 4 }),
+      });
+      const provider = createStubModelProvider({
+        script: toolScript("analysis.tool"),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+      const [observation] = execution.state.observations;
+
+      expect(observation?.source).toBe("tool");
+      expect(observation?.toolId).toBe("analysis.tool");
+      expect(observation?.stepId).toBe(execution.task.steps[0]?.id);
+      expect(observation?.output).toStrictEqual({ measured: 4 });
+    });
+
+    it("emits tool events alongside the step events", async () => {
+      const registry = registryWith();
+      const provider = createStubModelProvider({
+        script: toolScript(TEST_TOOL_ID),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+      const types = execution.events.map((event) => event.type);
+      const completedEvent = execution.events.find(
+        (event) => event.type === "tool.completed",
+      );
+
+      expect(types).toContain("tool.started");
+      expect(types).toContain("tool.completed");
+      // The step still reports itself, so a reader sees both layers.
+      expect(types).toContain("step.started");
+      expect(completedEvent?.data).toMatchObject({
+        toolId: TEST_TOOL_ID,
+        status: "succeeded",
+      });
+      expect(completedEvent?.stepId).toBe(execution.task.steps[0]?.id);
+    });
+
+    it("returns a failed execution rather than throwing when the tool fails", async () => {
+      const registry = registryWith({
+        execute: () => Promise.reject(new Error("the tool exploded")),
+      });
+      const provider = createStubModelProvider({
+        script: toolScript(TEST_TOOL_ID),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+
+      expect(execution.state.status).toBe("failed");
+      expect(execution.task.steps[0]?.status).toBe("failed");
+      expect(execution.task.steps[0]?.execution?.status).toBe("failed");
+      expect(execution.result?.errors?.[0]?.code).toBe("tool_failed");
+      expect(execution.result?.errors?.[0]?.stepId).toBe(
+        execution.task.steps[0]?.id,
+      );
+      expect(execution.events.at(-1)?.type).toBe("execution.failed");
+    });
+
+    it("keeps a failed tool from taking an independent step down with it", async () => {
+      const registry = registryWith({
+        execute: () => Promise.reject(new Error("the tool exploded")),
+      });
+      const provider = createStubModelProvider({
+        script: {
+          plan: () => ({
+            steps: [
+              {
+                description: "Use the echo capability.",
+                expectedOutput: "An echo.",
+                toolId: TEST_TOOL_ID,
+              },
+              {
+                description: "Reason about it instead.",
+                expectedOutput: "A conclusion.",
+              },
+            ],
+          }),
+          execute_step: () => ({ produced: "something" }),
+          evaluate: () => ({ summary: "A summary of the run." }),
+        },
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+
+      expect(execution.task.steps[0]?.status).toBe("failed");
+      // Nothing depends on the failed call, so the run still produced this.
+      expect(execution.task.steps[1]?.status).toBe("completed");
+      expect(execution.events.map((event) => event.type)).toContain("tool.failed");
+    });
+
+    it("refuses a tool the run was not granted, without calling it", async () => {
+      let called = false;
+
+      const registry = registryWith({
+        capabilities: ["network"],
+        execute: () => {
+          called = true;
+          return Promise.resolve({ fetched: true });
+        },
+      });
+      const provider = createStubModelProvider({
+        script: toolScript(TEST_TOOL_ID),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+
+      expect(called).toBe(false);
+      expect(execution.result?.errors?.[0]?.code).toBe("tool_permission_denied");
+      expect(execution.task.steps[0]?.execution?.status).toBe("failed");
+    });
+
+    it("calls a tool once its capability is granted to the run", async () => {
+      const registry = registryWith({
+        capabilities: ["network"],
+        execute: () => Promise.resolve({ fetched: true }),
+      });
+      const provider = createStubModelProvider({
+        script: toolScript(TEST_TOOL_ID),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+        tools: new ToolExecutor(registry, ToolPermission.only("network")),
+      });
+
+      expect(execution.state.status).toBe("completed");
+      expect(execution.task.steps[0]?.execution?.output).toStrictEqual({
+        fetched: true,
+      });
+    });
+
+    it("reports input the tool's schema rejects without running the tool", async () => {
+      let called = false;
+
+      const registry = registryWith({
+        inputSchema: z.object({ count: z.number() }),
+        execute: () => {
+          called = true;
+          return Promise.resolve({});
+        },
+      });
+      const provider = createStubModelProvider({
+        // The planner proposed a string where the schema wants a number.
+        script: toolScript(TEST_TOOL_ID, { count: "lots" }),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry,
+      });
+
+      expect(called).toBe(false);
+      expect(execution.result?.errors?.[0]?.code).toBe("invalid_tool_input");
+      expect(execution.task.steps[0]?.execution?.input).toBeUndefined();
+    });
+
+    it("runs the shipped text analysis tool through the default catalogue", async () => {
+      const provider = createStubModelProvider({
+        script: toolScript(TEXT_ANALYSIS_TOOL_ID, {
+          text: "One two. Three.\n\nFour.",
+        }),
+      });
+
+      // No tool dependencies injected: this is the catalogue a real run gets.
+      const execution = await runAgent({ objective: OBJECTIVE, provider });
+
+      expect(execution.state.status).toBe("completed");
+      expect(execution.task.steps[0]?.execution?.toolVersion).toBe(
+        TEXT_ANALYSIS_TOOL_VERSION,
+      );
+      expect(execution.task.steps[0]?.execution?.output).toStrictEqual({
+        characters: 22,
+        words: 4,
+        sentences: 3,
+        paragraphs: 2,
+      });
+    });
+
+    it("reports a tool missing from the run's registry as unavailable", async () => {
+      const provider = createStubModelProvider({
+        // Names a tool this run's registry does not hold.
+        script: toolScript("research.deep"),
+      });
+
+      const execution = await runAgent({
+        objective: OBJECTIVE,
+        provider,
+        registry: createToolRegistry(),
+      });
+
+      expect(execution.result?.errors?.[0]?.code).toBe("capability_unavailable");
+      expect(execution.task.steps[0]?.status).toBe("failed");
+      // The refusal is recorded as a receipt too, so the step says which tool
+      // was asked for as well as that it could not be supplied.
+      expect(execution.task.steps[0]?.execution?.toolId).toBe("research.deep");
+    });
   });
 });

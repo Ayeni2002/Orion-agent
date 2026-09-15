@@ -32,6 +32,32 @@ describe("planSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a step that names a tool and supplies its input", () => {
+    const result = planSchema.safeParse(
+      planWith([
+        VALID_STEP,
+        {
+          ...VALID_STEP,
+          dependsOn: [0],
+          toolId: "text.analyze",
+          toolInput: { text: "One two. Three." },
+        },
+      ]),
+    );
+
+    expect(result.success).toBe(true);
+  });
+
+  // The tool's own schema is the only thing that can check this, so anything
+  // object-shaped is carried through here rather than second-guessed.
+  it("rejects tool input that is not an object", () => {
+    expect(
+      planSchema.safeParse(
+        planWith([{ ...VALID_STEP, toolId: "text.analyze", toolInput: "some text" }]),
+      ).success,
+    ).toBe(false);
+  });
+
   it("rejects a plan with no steps", () => {
     const result = planSchema.safeParse(planWith([]));
 
@@ -148,6 +174,29 @@ describe("validatePlanGraph", () => {
 
     expect(issues).toHaveLength(1);
     expect(issues[0]?.index).toBe(2);
+  });
+
+  it("accepts a step that supplies input for the tool it names", () => {
+    const issues = validatePlanGraph(
+      plan([
+        {
+          ...VALID_STEP,
+          toolId: "text.analyze",
+          toolInput: { text: "One two. Three." },
+        },
+      ]),
+    );
+
+    expect(issues).toStrictEqual([]);
+  });
+
+  it("rejects tool input for a step that names no tool", () => {
+    const issues = validatePlanGraph(
+      plan([{ ...VALID_STEP, toolInput: { text: "One two. Three." } }]),
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.index).toBe(0);
   });
 
   // A cycle needs an edge pointing forwards, so the backwards-only rule makes
