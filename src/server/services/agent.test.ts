@@ -31,7 +31,7 @@ describe("startExecution", () => {
     clearExecutions();
     // Deterministic regardless of the machine it runs on. An empty value falls
     // back to the development provider, which needs no credentials.
-    vi.stubEnv("ORION_LLM_PROVIDER", "");
+    vi.stubEnv("LLM_API_STYLE", "");
   });
 
   it("runs an objective and returns the finished execution", async () => {
@@ -144,7 +144,7 @@ describe("getExecutionById", () => {
 describe("listRecentExecutionSummaries", () => {
   beforeEach(() => {
     clearExecutions();
-    vi.stubEnv("ORION_LLM_PROVIDER", "");
+    vi.stubEnv("LLM_API_STYLE", "");
   });
 
   it("returns nothing before anything has run", () => {
@@ -173,7 +173,7 @@ describe("listRecentExecutionSummaries", () => {
 describe("toExecutionSummary", () => {
   beforeEach(() => {
     clearExecutions();
-    vi.stubEnv("ORION_LLM_PROVIDER", "");
+    vi.stubEnv("LLM_API_STYLE", "");
   });
 
   it("omits a finished timestamp and summary while a run is unfinished", async () => {
@@ -192,7 +192,7 @@ describe("toExecutionSummary", () => {
 
 describe("getEngineCapabilities", () => {
   beforeEach(() => {
-    vi.stubEnv("ORION_LLM_PROVIDER", "");
+    vi.stubEnv("LLM_API_STYLE", "");
   });
 
   it("reports the development provider", () => {
@@ -214,11 +214,11 @@ describe("getEngineCapabilities", () => {
   });
 
   it("reports a configuration problem as data rather than throwing", () => {
-    vi.stubEnv("ORION_LLM_PROVIDER", "a-vendor-that-does-not-exist");
+    vi.stubEnv("LLM_API_STYLE", "a-style-that-does-not-exist");
 
     const capabilities = getEngineCapabilities();
 
     expect(capabilities.provider).toBeNull();
-    expect(capabilities.configurationError).toContain("ORION_LLM_PROVIDER");
+    expect(capabilities.configurationError).toContain("LLM_API_STYLE");
   });
 });

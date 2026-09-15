@@ -124,9 +124,10 @@ export default function SettingsPage() {
           <div className="rounded-md border border-border bg-muted px-3 py-2">
             <p className="text-xs text-muted-foreground">
               Configured through environment variables —
-              <code className="mx-1">ORION_LLM_BASE_URL</code>,
-              <code className="mx-1">ORION_LLM_MODEL</code> and
-              <code className="mx-1">ORION_LLM_API_KEY</code>. Secrets are read
+              <code className="mx-1">LLM_API_STYLE</code>,
+              <code className="mx-1">LLM_ENDPOINT</code>,
+              <code className="mx-1">LLM_MODEL</code> and
+              <code className="mx-1">LLM_API_KEY</code>. Secrets are read
               on the server and are never displayed here or sent to the browser.
             </p>
           </div>

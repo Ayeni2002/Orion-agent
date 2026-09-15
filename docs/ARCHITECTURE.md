@@ -189,7 +189,7 @@ src/server/agent/provider/index.ts          resolveModelProvider() — the one p
 ```
 
 The engine talks to `ModelProvider` and knows nothing else: not a wire format, not a
-vendor's message shape, not a base URL. `ModelProvider` has three independent
+vendor's message shape, not a base URL. `ModelProvider` has several independent
 implementations of the same interface, which is the practical evidence that the seam is
 real rather than intended.
 
@@ -198,28 +198,43 @@ contacts nothing; its plan is a fixed analytical skeleton parameterised by the o
 text. It is never presented as AI output — `isExternal` is `false`, and every execution
 carries its provider descriptor so the workspace can state which one ran.
 
-**Resolution does not fall back.** If `ORION_LLM_PROVIDER` names a provider Orion does
-not implement, `getModelProviderConfig` throws and the run fails loudly. Quietly running
-the development adapter while an operator believes a real model is configured would make
-every downstream result a lie.
+**The real adapter is one file, and it is not vendor-specific.** `provider/openai-provider.ts`
+speaks the OpenAI-compatible `/chat/completions` protocol, which OpenRouter, Groq,
+Together, Fireworks, vLLM, LM Studio and OpenAI itself all speak. `LLM_API_STYLE` names
+the *protocol* rather than the vendor, so reaching a new service is a change to
+`LLM_ENDPOINT` and not a change to code. A genuinely different protocol — Anthropic's
+messages API, Gemini's `generateContent` — would be a new member of
+`SUPPORTED_API_STYLES` and a new adapter beside this one.
+
+**Resolution does not fall back.** If `LLM_API_STYLE` names a style Orion does not
+implement, or a remote style is configured without an endpoint or a model,
+`getModelProviderConfig` throws and the run fails loudly. Quietly running the development
+adapter while an operator believes a real model is configured would make every downstream
+result a lie.
 
 **The credential never leaves `src/lib/env.ts`.** `getModelProviderConfig` reads
-`ORION_LLM_API_KEY` *only* to compute a `hasApiKey` boolean and never returns the value,
-so no code path can place it in a response body, an error message or a log line. §10's
-one-reader rule is what makes this enforceable rather than aspirational.
+`LLM_API_KEY` *only* to compute a `hasApiKey` boolean and never returns the value. That
+matters more now than it did when nothing consumed the key: the configuration object is
+spread into provider descriptors, returned from services and rendered by the settings
+screen, so a credential living on it would travel with every copy. The one function that
+does return the secret is `readModelApiKey`, whose sole caller is the adapter, which
+writes it into an `Authorization` header and drops it. §10's one-reader rule is what makes
+this enforceable rather than aspirational.
 
-`.env.example` carries the provider-neutral names, now live rather than reserved:
+`.env.example` carries the provider-neutral names, now live:
 
 ```
-ORION_LLM_PROVIDER=   # "dev" (default). Any other value fails loudly.
-ORION_LLM_API_KEY=
-ORION_LLM_MODEL=
-ORION_LLM_BASE_URL=
+LLM_API_STYLE=   # "dev" (default) | "openai". Any other value fails loudly.
+LLM_ENDPOINT=    # Base URL, without the /chat/completions suffix.
+LLM_MODEL=       # Required for every style except "dev".
+LLM_API_KEY=     # Optional — a local endpoint such as vLLM needs none.
 ```
 
-**Still absent:** a real external adapter. Adding one means adding a module under
-`provider/` and a case in `resolveModelProvider` — a change to two files, which is the
-test of whether this section's claims hold.
+**Not yet present:** a research/search adapter. Phase 5 adds a second seam beside this
+one, through which retrieval reaches the network; the model adapter above is never asked
+to search, and the search adapter is never asked to reason. Keeping those apart is what
+makes "the model did not fetch this" a checkable claim rather than a hope.
+
 
 ## 7. Tool system
 

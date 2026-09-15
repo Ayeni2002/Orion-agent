@@ -64,69 +64,132 @@ export function getSupabaseConfig(): SupabaseConfig {
 }
 
 /**
- * Model providers Orion knows how to construct.
+ * The wire protocol a model endpoint speaks.
  *
- * Only the deterministic development adapter is implemented. Naming a real
- * provider here without implementing it would turn a configuration mistake
- * into a run that silently produces development output while appearing to be
- * a real inference call, so unsupported values are rejected loudly instead.
+ * Naming the *style* rather than the vendor is the point of it. OpenRouter,
+ * Groq, Together, vLLM, LM Studio and OpenAI itself all speak the same
+ * `/chat/completions` protocol, so any of them is configured by pointing
+ * `LLM_ENDPOINT` at it rather than by adding an adapter. A genuinely different
+ * protocol — Anthropic's messages API, Gemini's `generateContent` — would be a
+ * new member here and a new adapter beside it, not a special case threaded
+ * through an existing one.
+ *
+ * `dev` is the deterministic local adapter: no endpoint, no credential, no
+ * network call. It is the default, so a fresh checkout runs with no
+ * configuration at all.
+ *
+ * A style is listed here only once an adapter for it exists. Naming one that
+ * Orion cannot construct would turn a configuration mistake into a run that
+ * silently produces development output while appearing to be a real inference
+ * call, so `getModelProviderConfig` rejects an unknown value loudly instead.
  */
-export const SUPPORTED_MODEL_PROVIDERS = ["dev"] as const;
+export const SUPPORTED_API_STYLES = ["dev", "openai"] as const;
 
-export type ModelProviderId = (typeof SUPPORTED_MODEL_PROVIDERS)[number];
+export type LlmApiStyle = (typeof SUPPORTED_API_STYLES)[number];
 
-const modelProviderSchema = z.object({
-  provider: z.enum(SUPPORTED_MODEL_PROVIDERS),
-  model: z.string().min(1).optional(),
-  baseUrl: z.string().url().optional(),
-});
+const apiStyleSchema = z.enum(SUPPORTED_API_STYLES);
+const endpointSchema = z.string().url();
 
 export interface ModelProviderConfig {
-  provider: ModelProviderId;
+  style: LlmApiStyle;
+  /** Base URL of the endpoint, without the `/chat/completions` suffix. */
+  endpoint?: string;
   model?: string;
-  baseUrl?: string;
   /**
    * Whether an API key is present in the environment — never the key itself.
    *
-   * This module is the only one permitted to read `process.env`, and the key
-   * is read *only* to compute this boolean. Nothing outside can obtain the
-   * value, which is what makes "never expose model credentials" a property of
-   * the code rather than a rule someone has to remember. If a future phase
-   * needs the credential, it should be passed straight into that provider's
-   * client and never returned from a function like this one.
+   * This is what the settings screen and the capabilities endpoint read, and it
+   * is deliberately a boolean: a caller can report that Orion is configured
+   * without ever holding the credential. The value itself is reachable only
+   * through `readModelApiKey` below, which exists so the adapter can hand it
+   * straight to its client.
    */
   hasApiKey: boolean;
 }
 
 /**
+ * The credential, for the one caller that has to send it.
+ *
+ * This is the single function in the application that returns a secret, and it
+ * is separate from `getModelProviderConfig` on purpose. That function's result
+ * is spread into descriptors, returned from services and rendered by the
+ * settings screen; a credential living on it would travel with every copy. Here
+ * the value has exactly one destination — the `Authorization` header of the
+ * provider that is about to make a call — and nothing that returns it to a
+ * caller can also return an execution.
+ *
+ * Returns `undefined` when unset, which is legitimate rather than an error: a
+ * local endpoint such as vLLM or LM Studio needs no credential.
+ */
+export function readModelApiKey(): string | undefined {
+  const key = process.env.LLM_API_KEY?.trim();
+  return key === undefined || key.length === 0 ? undefined : key;
+}
+
+/**
  * Model provider configuration.
  *
- * Defaults to the development adapter when `ORION_LLM_PROVIDER` is unset, so a
- * fresh checkout runs without any configuration at all.
+ * Defaults to the deterministic development adapter when `LLM_API_STYLE` is
+ * unset, so a fresh checkout runs without any configuration at all.
+ *
+ * Configuration problems throw rather than degrade. Each of the three failures
+ * below — an unknown style, a missing endpoint, a malformed endpoint — produces
+ * a message naming the variable to fix, because the alternative is a run that
+ * appears to use a real model and does not.
  */
 export function getModelProviderConfig(): ModelProviderConfig {
-  const rawProvider = process.env.ORION_LLM_PROVIDER?.trim() || "dev";
-  const model = process.env.ORION_LLM_MODEL?.trim() || undefined;
-  const baseUrl = process.env.ORION_LLM_BASE_URL?.trim() || undefined;
+  const rawStyle = process.env.LLM_API_STYLE?.trim() || "dev";
+  const endpoint = process.env.LLM_ENDPOINT?.trim() || undefined;
+  const model = process.env.LLM_MODEL?.trim() || undefined;
 
-  const parsed = modelProviderSchema.safeParse({
-    provider: rawProvider,
-    model,
-    baseUrl,
-  });
+  const parsedStyle = apiStyleSchema.safeParse(rawStyle);
 
-  if (!parsed.success) {
+  if (!parsedStyle.success) {
     throw new Error(
-      `ORION_LLM_PROVIDER is set to "${rawProvider}", which Orion does not ` +
-        `implement. Supported values: ${SUPPORTED_MODEL_PROVIDERS.join(", ")}. ` +
+      `LLM_API_STYLE is set to "${rawStyle}", which Orion does not implement. ` +
+        `Supported values: ${SUPPORTED_API_STYLES.join(", ")}. ` +
         "Leave it unset to use the deterministic development provider.",
     );
   }
 
-  const apiKey = process.env.ORION_LLM_API_KEY;
+  const style = parsedStyle.data;
+
+  // A remote style without an endpoint has nowhere to send its request, and
+  // finding that out at the first tool call rather than at startup would put
+  // the failure in the middle of a run.
+  if (style !== "dev" && endpoint === undefined) {
+    throw new Error(
+      `LLM_API_STYLE is "${style}", which needs a remote endpoint, but ` +
+        "LLM_ENDPOINT is not set. Set it to the provider's base URL — for " +
+        'OpenRouter that is "https://openrouter.ai/api/v1".',
+    );
+  }
+
+  if (endpoint !== undefined && !endpointSchema.safeParse(endpoint).success) {
+    throw new Error(
+      `LLM_ENDPOINT is not a valid URL: "${endpoint}". It should be the base ` +
+        'URL only, for example "https://openrouter.ai/api/v1".',
+    );
+  }
+
+  // Required for the same reason the endpoint is, and with no default: a
+  // gateway such as OpenRouter addresses models in its own namespace
+  // (`openai/gpt-4o`, `anthropic/claude-sonnet-4`), so any value chosen here
+  // would be a guess about someone else's catalogue.
+  if (style !== "dev" && model === undefined) {
+    throw new Error(
+      `LLM_API_STYLE is "${style}", which needs a model id, but LLM_MODEL is ` +
+        'not set. Set it to the model the endpoint should use — for OpenRouter ' +
+        'that looks like "openai/gpt-4o".',
+    );
+  }
+
+  const apiKey = process.env.LLM_API_KEY;
 
   return {
-    ...parsed.data,
+    style,
+    ...(endpoint === undefined ? {} : { endpoint }),
+    ...(model === undefined ? {} : { model }),
     hasApiKey: typeof apiKey === "string" && apiKey.trim().length > 0,
   };
 }

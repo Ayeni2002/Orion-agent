@@ -259,13 +259,13 @@ describe("runAgent", () => {
   });
 
   it("returns a failed execution when the provider cannot be configured", async () => {
-    vi.stubEnv("ORION_LLM_PROVIDER", "some-other-vendor");
+    vi.stubEnv("LLM_API_STYLE", "some-other-style");
 
     const execution = await runAgent({ objective: OBJECTIVE });
 
     expect(execution.state.status).toBe("failed");
     expect(execution.result?.errors?.[0]?.code).toBe("internal_error");
-    expect(execution.result?.errors?.[0]?.message).toContain("ORION_LLM_PROVIDER");
+    expect(execution.result?.errors?.[0]?.message).toContain("LLM_API_STYLE");
   });
 
   it("keeps a completed run completed when only the narrative fails", async () => {
