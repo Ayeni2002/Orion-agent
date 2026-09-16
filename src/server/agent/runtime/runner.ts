@@ -218,7 +218,15 @@ export async function runAgent({
     state.setStatus("planning");
     events.emit("execution.planning", "Decomposing the objective into steps.");
 
-    task.steps = await createPlan({ taskId, objective, provider: resolved });
+    // The catalogue is passed so the planner can only name tools that exist.
+    // `list()` is the public projection — metadata with no schema and no
+    // `execute` — so planning gains no way to call anything.
+    task.steps = await createPlan({
+      taskId,
+      objective,
+      provider: resolved,
+      tools: registry.list(),
+    });
 
     events.emit("execution.planned", `Planned ${task.steps.length} step(s).`, {
       data: { stepCount: task.steps.length },
