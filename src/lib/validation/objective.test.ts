@@ -50,4 +50,23 @@ describe("objectiveSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("names the objective as missing rather than reporting the schema's internals", () => {
+    // Zod 4 runs the type check before `.min()`, so without an explicit `error`
+    // on `z.string()` an absent field reports "expected string, received
+    // undefined" — and the workspace renders the validation message to the user,
+    // so that string would be shown to them verbatim.
+    const absent = objectiveSchema.safeParse({});
+    const wrongType = objectiveSchema.safeParse({ objective: 42 });
+
+    expect(absent.success).toBe(false);
+    expect(wrongType.success).toBe(false);
+
+    if (absent.success || wrongType.success) {
+      throw new Error("Expected both inputs to be refused.");
+    }
+
+    expect(absent.error.issues[0]?.message).toBe("An objective is required.");
+    expect(wrongType.error.issues[0]?.message).toBe("An objective is required.");
+  });
 });

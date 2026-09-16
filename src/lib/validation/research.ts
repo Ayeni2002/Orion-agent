@@ -29,9 +29,25 @@ import { z } from "zod";
 export const QUESTION_MIN_LENGTH = 10;
 export const QUESTION_MAX_LENGTH = 500;
 
+const MISSING_QUESTION = "A research question is required.";
+
 export const researchRequestSchema = z.object({
+  /**
+   * `error` rather than `required_error`, which Zod 4 replaced. Without it the
+   * absent field falls out of the type check before `.min()` is reached, and a
+   * caller who omitted the question is told "expected string, received
+   * undefined" — the schema's internals rather than the fix, and on the very
+   * path a caller is most likely to hit. One message covers a missing field, a
+   * blank one and a non-string one, because from a caller's side those are the
+   * same complaint: no usable question was supplied.
+   *
+   * The docblock above claims these messages are written for the person who
+   * typed the input. Until this option was added that was true only of the
+   * bounds, and false of the missing field — the one case where a reader most
+   * needs to be told what to do.
+   */
   question: z
-    .string()
+    .string({ error: MISSING_QUESTION })
     .trim()
     .min(
       QUESTION_MIN_LENGTH,

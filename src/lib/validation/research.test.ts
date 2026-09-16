@@ -148,4 +148,27 @@ describe("researchRequestSchema", () => {
       `Ask a question of at least ${QUESTION_MIN_LENGTH} characters.`,
     );
   });
+
+  it("names the question as missing rather than reporting the schema's internals", () => {
+    // The path a caller hits most often, and the one the test above does not
+    // cover: Zod 4 runs the type check before `.min()`, so without an explicit
+    // `error` on `z.string()` an absent field reports "expected string, received
+    // undefined" — which describes the schema rather than what to do about it.
+    const absent = researchRequestSchema.safeParse({});
+    const wrongType = researchRequestSchema.safeParse({ question: 42 });
+
+    expect(absent.success).toBe(false);
+    expect(wrongType.success).toBe(false);
+
+    if (absent.success || wrongType.success) {
+      throw new Error("Expected both inputs to be refused.");
+    }
+
+    // The same message for both, deliberately: a caller who omitted the field
+    // and a caller who sent the wrong type have the same thing to fix.
+    expect(absent.error.issues[0]?.message).toBe("A research question is required.");
+    expect(wrongType.error.issues[0]?.message).toBe(
+      "A research question is required.",
+    );
+  });
 });

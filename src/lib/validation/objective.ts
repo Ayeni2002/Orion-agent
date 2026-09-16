@@ -12,9 +12,19 @@ import { z } from "zod";
 export const OBJECTIVE_MIN_LENGTH = 10;
 export const OBJECTIVE_MAX_LENGTH = 2000;
 
+const MISSING_OBJECTIVE = "An objective is required.";
+
 export const objectiveSchema = z.object({
+  /**
+   * `error` rather than `required_error`, which Zod 4 replaced. Without it the
+   * absent field falls out of the type check before `.min()` is reached, and the
+   * workspace shows "expected string, received undefined" — the schema's
+   * internals rather than the fix. One message covers a missing field, a blank
+   * one and a non-string one, because from a user's side those are the same
+   * complaint: no usable objective was supplied.
+   */
   objective: z
-    .string()
+    .string({ error: MISSING_OBJECTIVE })
     .trim()
     .min(
       OBJECTIVE_MIN_LENGTH,
