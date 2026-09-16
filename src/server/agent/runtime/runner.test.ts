@@ -294,6 +294,51 @@ describe("runAgent", () => {
     expect(findings[0]).toMatchObject({ status: "completed" });
   });
 
+  // The evaluator is only ever as informative as what the runner hands it. This
+  // drives a real tool through the whole engine, so it fails if the wiring drops
+  // the observations anywhere between the executor recording them and the
+  // narrative being asked for a summary.
+  it("tells the evaluator what the run actually produced", async () => {
+    const contexts: Array<Record<string, unknown>> = [];
+
+    const provider = createStubModelProvider({
+      script: {
+        plan: () => ({
+          steps: [
+            {
+              description: "Count the characters in the phrase.",
+              expectedOutput: "The character count.",
+              toolId: TEXT_ANALYSIS_TOOL_ID,
+              toolInput: { text: "the quick brown fox." },
+            },
+          ],
+        }),
+        evaluate: (context) => {
+          contexts.push(context);
+          return { summary: "A summary of the run." };
+        },
+      },
+    });
+
+    const execution = await runAgent({ objective: OBJECTIVE, provider });
+    const results = contexts[0]?.stepResults as
+      | Array<Record<string, unknown>>
+      | undefined;
+
+    expect(execution.state.status).toBe("completed");
+    expect(results).toHaveLength(1);
+    expect(results?.[0]).toMatchObject({
+      index: 0,
+      description: "Count the characters in the phrase.",
+      status: "completed",
+      expectedOutput: "The character count.",
+      // A measurement, attributed to the tool that made it.
+      source: "tool",
+      toolId: TEXT_ANALYSIS_TOOL_ID,
+    });
+    expect(results?.[0]?.output).toContain('"characters":20');
+  });
+
   it("keeps every timestamp in the state as a round-trippable ISO string", async () => {
     const provider = createStubModelProvider({ script: HAPPY_SCRIPT });
 

@@ -270,11 +270,17 @@ export async function runAgent({
     state.setStatus("evaluating");
     events.emit("execution.evaluating", "Evaluating the results.");
 
+    // One snapshot for both reads. The observations are what the narrative
+    // summarises; without them the evaluator can only say that steps completed,
+    // never what they produced.
+    const snapshot = state.snapshot();
+
     const evaluation = await evaluateExecution({
       task,
       objective,
       provider: resolved,
-      errors: state.snapshot().errors,
+      observations: snapshot.observations,
+      errors: snapshot.errors,
     });
 
     state.finish(evaluation.status);
