@@ -5,9 +5,11 @@ import { cn } from "@/lib/utils";
 /**
  * The placeholder shown wherever a section has no data yet.
  *
- * Phase 2 has no backend, so this is what most sections render. It states the
- * situation plainly and offers the next action rather than showing invented
- * content — a "no research yet" panel is honest, a fabricated list is not.
+ * Still what most sections render, because most of them have nothing behind
+ * them: projects and memory are later phases, and the sections that do have a
+ * backend are empty until a run is made. It states the situation plainly and
+ * offers the next action rather than showing invented content — a "no research
+ * yet" panel is honest, a fabricated list is not.
  */
 export function EmptyState({
   icon: Icon,

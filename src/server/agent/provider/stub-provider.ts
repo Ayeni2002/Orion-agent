@@ -35,6 +35,7 @@ export interface StubProviderScript {
   evaluate?: (context: Record<string, unknown>) => StubResponse;
   research_plan?: (context: Record<string, unknown>) => StubResponse;
   research_findings?: (context: Record<string, unknown>) => StubResponse;
+  report?: (context: Record<string, unknown>) => StubResponse;
 }
 
 export interface StubProviderOptions {
@@ -95,6 +96,7 @@ export function createStubModelProvider({
     evaluate: 0,
     research_plan: 0,
     research_findings: 0,
+    report: 0,
   };
 
   function respond(request: ModelProviderRequest): ModelProviderResponse {

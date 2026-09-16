@@ -312,6 +312,27 @@ export interface ResearchResult {
   evidence: ResearchEvidence[];
   sources: ResearchSource[];
   conflicts: ResearchConflict[];
+  /**
+   * What the question asked that the retrieved sources did not establish.
+   *
+   * Promoted to a field of the result in Phase 6, at the point a consumer needed
+   * it structurally. The extractor has computed these since Phase 5 — they are
+   * the `gaps` it reports — but until now they reached only an event payload and
+   * one observation's `output`, so reading them meant inspecting an internal
+   * shape. That is the same objection `Observation.source` and `.toolId` exist to
+   * answer, and the answer is the same: a value another subsystem must read is a
+   * field, not a key inside somebody else's record.
+   *
+   * A report is the consumer that forced it. §14 of the Phase 6 brief requires
+   * unresolved questions to be *preserved*, and a report that dropped them would
+   * be presenting a partial answer as a complete one — the failure mode this
+   * whole subsystem is built to avoid.
+   *
+   * Empty is a real and common state: sources that settled the question leave
+   * nothing here, and a report omits the section entirely rather than printing
+   * that there is nothing to print.
+   */
+  unresolvedQuestions: string[];
   /** Populated when `sufficiency` is `"failed"`. */
   errors: AgentExecutionError[];
   /** Limits that were reached. Empty when the run stayed inside all of them. */

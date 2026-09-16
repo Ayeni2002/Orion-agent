@@ -41,6 +41,13 @@ import type {
  * reasons that are structural rather than lucky: an adapter that cannot invent
  * cannot fail an honesty check, and an adapter that cannot fail an honesty check
  * is not a substitute for a model.
+ *
+ * Phase 6 added `report`, and it is the only case in this file that produces
+ * nothing usable on purpose. A report's prose is the part a reader weighs as
+ * judgement, so an adapter with no judgement to offer returns a response that
+ * cites no finding — which the generator refuses by rule. See the case itself;
+ * the short version is that the honest answer to "write this report" from a
+ * deterministic stand-in is a report built from the record, marked as such.
  */
 
 export const DEV_PROVIDER_ID = "dev";
@@ -573,6 +580,48 @@ export function createDevModelProvider(
                   `without interpreting it, so it does not judge whether these sources answer the question: ${summarize(question)}`,
               ),
             ],
+          },
+          model,
+        );
+      }
+
+      /**
+       * Phase 6's operation, and the one this adapter answers by declining.
+       *
+       * A report's prose is the part a reader weighs as judgement, and this
+       * adapter has no judgement to offer — it states plainly elsewhere in this
+       * file that it "must never be presented to a user as if a model produced
+       * it". The honest answer to "write the readable parts of a report" is
+       * therefore not a worse report but no report, and the shape below says so
+       * in the only vocabulary the seam has: a response that cites **no finding**.
+       *
+       * That is load-bearing rather than decorative. The report generator rejects
+       * any response whose prose names no finding, on the grounds that ungrounded
+       * prose has nothing to be checked against, so this response cannot become a
+       * model-mode report even if a caller reaches this adapter directly. It also
+       * means the generator's `isExternal` guard and this case agree: both say
+       * that a report built with the development adapter is built from the
+       * research record, which is what its `metadata.generation.mode` will read.
+       *
+       * The counts are real — they are read from the brief it was handed — so a
+       * caller inspecting this response learns something true, and nothing it
+       * could mistake for analysis.
+       */
+      case "report": {
+        const brief = readContextString(request.context, "brief") ?? "";
+        const findings = brief.match(/^\[\d+\] /gm)?.length ?? 0;
+
+        return jsonResponse(
+          {
+            summary: {
+              body:
+                `${findings} finding(s) were recorded by the research run. This ` +
+                "response was produced by the deterministic development adapter, " +
+                "which does not write report prose; the report will be assembled " +
+                "from the research record instead.",
+              findingIndices: [],
+            },
+            sections: [],
           },
           model,
         );

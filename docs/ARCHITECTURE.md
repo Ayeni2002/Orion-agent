@@ -496,3 +496,84 @@ inventing research nobody carried out.
 scheduled or background runs, and no cross-run cache of retrieved sources. §20 requires
 that, and it is also what keeps a research run's result reproducible from its own record.
 
+## 12. Report subsystem
+
+**The last step, and the only one that faces a person.** Numbered 12 for the reason §11
+gives: other documents refer to these sections by number. The dependency order is
+§5 engine → §11 research → here.
+
+§2 of the Phase 6 brief requires report generation to be a service of its own and not a
+branch inside the runner, the executor or the research service. The import list is how
+that is enforced rather than promised — `src/server/report/` reaches *down* into
+`@/server/agent` and `@/server/research`, and nothing reaches sideways into it:
+
+| Reports need | Comes from | Not built here |
+| --- | --- | --- |
+| The record being reported on | `getResearch` | a second research store |
+| A model to write prose | `ModelProvider`, `parseModelJson` | a second model client |
+| URL vetting at render time | `parseSourceUrl` | a second URL checker |
+| Identifiers | `createId`, `now` | a second id scheme |
+| Structured failure | the service layer's `ServiceError` | a second error vocabulary |
+
+**The shape, in one pass.** A finished `ResearchResult` goes in. The sections that carry
+evidence — the objective, the findings, the sources and their verified quotes, the
+conflicts, the questions left open — are built from the record by `deterministic.ts`,
+which composes no sentence of its own. A model may write the three sections that are
+*about* the evidence: a summary, the analysis, and suggested next steps. It writes them
+from a numbered brief of the findings and refers to them by integer index and nothing
+else. What it writes is checked against that same brief, and a response that fails, or
+that cites nothing at all, is discarded in favour of the deterministic document with the
+reason recorded.
+
+Four decisions are worth stating because they are the ones a reader would otherwise have
+to infer.
+
+**The evidence-bearing half is server-authored, always.** §15 asks for a deterministic
+fallback, and the tempting shape is a second generator used when the model is
+unavailable. That shape has a failure mode: the two would drift, and the first time they
+disagreed about what the research found, one of them would be wrong with no way to tell
+which. So there is one builder, and the model's contribution is prose appended to it. A
+report with a model and one without cannot disagree, because they are the same document
+plus or minus the prose.
+
+**A URL cannot enter a report from a model, because no field accepts one.** §4 forbids
+fabricated URLs, and the usual enforcement is an instruction — which is advice, and
+advice is what a model is most likely to follow *approximately*. Here it is structural:
+`modelReportSchema` asks for integers and text, so a response supplying a `url`, a
+`sourceId`, a `quote` or a `title` has those keys stripped by Zod rather than merged. The
+model has no syntax for asserting where something came from.
+
+**A figure is checked against the brief, not against the corpus.** The brief the model was
+shown is built once, sent as one field of the prompt, and handed to the number check
+unchanged. Grounding against the retrieved corpus instead would pass a fabricated
+statistic whenever it happened to appear on a page the model never saw. A sentence
+carrying an ungrounded figure is **flagged and counted, not deleted** — the same
+disposition `verifyQuote` gives an unverifiable quote. The claim survives, marked, and
+the report says how many were marked.
+
+**The prose from a non-external provider is never requested.** `ModelProviderDescriptor`
+carries `isExternal`, and `dev-provider.ts` says of itself that it "must never be
+presented to a user as if a model produced it". A report's prose is the part a reader
+weighs as judgement, so the generator refuses before calling. This is also what makes the
+rejection of uncited prose load-bearing rather than incidental: the development adapter
+offers no citations, so a report generated with no real provider is always labelled as
+one.
+
+**A third known deviation, of the same kind as §10 and §11.** `report/store.ts` is a
+process-local `Map` with a 25-report bound. §11 of the Phase 6 brief asks for persistence
+"if the existing persistence architecture supports it" — it does not, so the question is
+answered by the same container the other two subsystems use. §22's "do not regenerate
+unnecessarily" is met by a single lookup in that store, not by a cache: no expiry, no
+invalidation, no key strategy.
+
+**No authentication means no ownership, and the documentation says so rather than
+implying otherwise.** §12 and §21 ask for ownership checks; there is no user identity to
+own anything. `POST /api/reports` is unauthenticated exactly as `/api/research` is. This
+is blocked on Phase 5R, and report ownership is the first thing to add when it lands.
+
+**What is deliberately absent.** No PDF export and no PDF dependency (§16 asks for a
+print-friendly view, and the browser's print dialog is the mechanism); no second renderer
+and no HTML template language; no queue, background worker or progress percentage
+(generation is synchronous, and §13 permits a simple loading state instead); no caching
+infrastructure. See `docs/REPORTS.md`.
+

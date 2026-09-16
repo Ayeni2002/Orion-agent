@@ -68,13 +68,14 @@ export default function HomePage() {
       </SplineHero>
 
       {/*
-        Below the fold, back on the ordinary page background — so the phase note
-        and anything added later keep using the normal theme tokens.
+        Below the fold, back on the ordinary page background — so this note and
+        anything added later keep using the normal theme tokens.
       */}
       <div className="mx-auto w-full max-w-5xl px-4 py-16 sm:px-6">
         <p className="mx-auto max-w-2xl text-center text-xs text-muted-foreground">
-          Phase 2 provides the application shell only. The workspace collects an
-          objective; planning, tool execution and results arrive in later phases.
+          Orion plans the objective into steps, calls the tools it needs, and
+          records what each step produced. The verdict is computed from those
+          step outcomes — never written by the model.
         </p>
       </div>
     </MarketingShell>

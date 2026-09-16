@@ -35,6 +35,7 @@ function countingCalls(): Record<ModelOperation, number> {
     evaluate: 0,
     research_plan: 0,
     research_findings: 0,
+    report: 0,
   };
 }
 

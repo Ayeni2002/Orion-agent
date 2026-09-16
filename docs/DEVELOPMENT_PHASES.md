@@ -18,10 +18,11 @@ shape of the parts marked *not implemented* here.
 | 3 | Agent engine | **Complete** |
 | 4 | Tool system | **Complete** |
 | 5 | Research intelligence | **Complete** |
+| 6 | Reports & deliverables | **Complete** — was roadmapped as Phase 8 |
 | 5R | Database & persistence | Not started — was roadmapped as Phase 5 |
-| 6 | Real model provider | Partly delivered by Phase 5; see below |
+| 6R | Real model provider | Partly delivered by Phase 5; see below |
 | 7 | Memory & state | Not started |
-| 8 | Reports & delivery | Not started |
+| 8 | Reports & delivery | Displaced by Phase 6; see below |
 | 9 | Hardening & deployment | Not started |
 
 ### Why the numbering changed
@@ -42,7 +43,7 @@ Three consequences worth recording:
 
 - The original **Phase 3 (Model provider)** is split. The *interface*, its resolution,
   and a deterministic development adapter were built as part of Phase 3. A real external
-  adapter arrived in Phase 5; see the note under Phase 6.
+  adapter arrived in Phase 5; see the note under Phase 6R.
 - The original **Phase 4 (Tool system)** was built as Phase 4, against the registry seam
   Phase 3 left in place. That seam turned out to need *evolving* rather than filling:
   Phase 3's `AgentTool` and `executor/registry.ts` were replaced by the fuller
@@ -68,12 +69,61 @@ Two things are true at once and both belong here:
   covered by tests. That is the roadmap's Phase 6 item, delivered as a dependency of
   Phase 5 rather than as its own phase.
 
-What that leaves for Phase 6 is stated in that section. The practical consequence for
+What that leaves for Phase 6R is stated in that section. The practical consequence for
 Phase 5R is that its urgency went **up**, not down: there is now more in process memory
 than there was, and a serverless deployment loses all of it between requests.
 
 Phase 5R keeps the roadmap's original content unchanged. It is retitled rather than
 deleted because none of it was decided against — it was simply displaced.
+
+### Why Phase 6 is reports, not the model provider
+
+The work in this phase was directed by a Phase 6 brief for **reports and deliverables**,
+not by the roadmap's Phase 6. That is the fourth divergence in this document, and it is
+recorded in the same form as the previous three.
+
+Two things are true at once and both belong here:
+
+- **The roadmap's Phase 6 did not get built as its own phase.** "Real model provider" was
+  partly delivered by Phase 5 — the OpenAI-compatible adapter exists and is selected by
+  `LLM_API_STYLE=openai` — and Phase 6 added one member to its closed `ModelOperation`
+  union (`"report"`) rather than building any of it. What remains is listed under
+  **Phase 6R** below, unchanged.
+- **The roadmap's Phase 8 arrived early.** "Reports & delivery" was Phase 8. Phase 6 of
+  this brief asks for report generation, the workspace integration and a print view, all
+  of which are now built. What Phase 8 still owns — delivery, export to a file format,
+  and the databases and memory the roadmap's ordering assumed would exist by then — is
+  noted in that section.
+
+The reordering is again a finding rather than a correction. The roadmap put reports last
+because it assumed reports would rest on persisted memory and a live model, and it was
+right that they are more useful with both. What it underestimated is that a report can be
+*better* without either: built from a research record that already carries verified
+quotes and URLs, it is traceable by construction rather than by retrieval, and it is
+generatable with no provider at all. The reports subsystem was therefore buildable
+against the phase it actually needed — Phase 5 — instead of the two it was scheduled
+after.
+
+Two consequences follow, and the second is the one worth stating:
+
+- **Phase 8 is displaced, not cancelled.** Its remaining content is delivery and export,
+  and it now depends on Phase 6 rather than the other way round.
+- **Phase 5 gained a field after it was complete.** `ResearchResult` gained
+  `unresolvedQuestions: string[]`, populated from the extractor's own `gaps`. The value
+  was already computed — it reached an event and one observation's `output` — and reading
+  it back out of `observations[].output` would have been inspecting an internal shape,
+  which is precisely what `Observation.source` and `Observation.toolId` were made
+  first-class to avoid. Dropping it would have failed the brief's requirement that
+  unresolved questions be preserved in a report. It is additive, it surfaces an existing
+  value, and it adds no capability. **Recorded here rather than absorbed silently**,
+  because §24 of the phase brief says not to expand the research engine and this does
+  touch two Phase 5 files.
+
+One change to a Phase 3 test is recorded for the same reason: `planner/index.test.ts`
+holds a `Record<ModelOperation, number>` literal, so the new `"report"` member required
+`report: 0` to be added. That is the closed union working as designed — the compiler named
+every place that had to decide — and the change is mechanical rather than a rewrite of the
+test's intent.
 
 ---
 
@@ -377,7 +427,131 @@ store to replace. Phase 5 made that two stores rather than one.
 
 ---
 
-## Phase 6 — Real model provider
+## Phase 6 — Reports & deliverables ✅
+
+> **Verified against this tree.** All three gates named under *Gates* were run and passed:
+> `tsc --noEmit` clean, `npm test` at **854/854 across 40 files** (baseline 629/629 across
+> 30 before this phase's ten new files), and `npm run build` exit 0 with `/reports`,
+> `/reports/[id]`, `/api/reports` and `/api/reports/[id]` all rendering as `ƒ`.
+>
+> Two gaps remain and are not gate failures — they are absences stated in the section
+> below and in `docs/REPORTS.md`. There are no render-level UI tests, and the prose path
+> has never been exercised against a live model.
+
+**Goal:** a finished research result becomes a document a person can read, print and
+check — ordered, readable, and still traceable, so a reader can answer *where did Orion
+get this?* without searching the application.
+
+Delivered:
+
+- **Report domain model** (`src/types/report.ts`) — `Report`, `ReportSection`,
+  `ReportCitation`, `ReportSource`, `ReportMetadata`, `ReportStatus`,
+  `ReportGenerationRequest`, `ReportGenerationResult`, `ReportSummary`. JSON-safe
+  vocabulary only, following the seam `src/types/agent.ts` and `src/types/research.ts`
+  draw. `ReportSectionKind` is a closed union of eight, so the renderer switches over it
+  exhaustively and adding a kind is a compile error at the one place that must decide how
+  to draw it.
+- **A dedicated report service** (`src/server/report/`) — generator, deterministic
+  builder, grounding, schema, service and store. §2's boundary is enforced by the import
+  list: nothing under `src/server/report/` imports from `@/server/research/tools`, no
+  retrieval provider is resolved, and the generator cannot search, plan or call a tool.
+  A generator that could look something up would be a second research engine with its own
+  honesty checks.
+- **The one idea, which the rest reduces to** — *the evidence-bearing half of a report is
+  built by the server and is never model-authored; a model only writes prose, and every
+  prose block declares which findings it draws on.* The title, objective, findings,
+  sources, evidence, conflicts and unresolved questions are all assembled from the
+  `ResearchResult`, verbatim. Only the executive summary, the detailed analysis and the
+  suggested next steps are prose.
+- **A grounding contract that is arithmetic rather than instruction** — no URL can enter
+  from the model because no field accepts one; every citation index must resolve to a
+  finding or is dropped and counted; quotes come only from `ResearchEvidence.quote`, which
+  Phase 5 already verified; every numeric token in generated prose must appear in the brief
+  the model was shown, or the sentence is flagged and counted; and bounds cap sections,
+  headings, bodies and next steps. Only the first of the seven mechanisms is an instruction
+  to the model, and it is the weakest. `src/server/report/grounding.ts` is the whole of the
+  machine, and its four functions are exported so a test can assert the arithmetic rather
+  than the generator.
+- **LLM integration through the existing `ModelProvider`** — one new operation, `report`,
+  added to the closed `ModelOperation` union. Structured output: the model returns integer
+  finding indices and text, `parseModelJson` parses it, `modelReportSchema.safeParse`
+  validates it, and unknown keys are **stripped rather than merged**. Malformed output is
+  rejected, never silently accepted.
+- **The deterministic fallback** (`report/deterministic.ts`) — the same report minus the
+  prose, built from the supplied data alone. It is not a second generator: because the
+  evidence half is always server-authored, a report with a model and one without cannot
+  disagree about what the research found.
+- **A three-tier failure policy, none of it silent** — reject the model output and fall
+  back to the deterministic report; degrade a claim and keep the report, counting it; or
+  fail the report at the service boundary (`404` for no such record, `409` for a record
+  with no result).
+- **A reusable renderer, separate from generation** (`components/reports/`) — it takes a
+  `Report` and knows nothing about how one was produced. §7 is met by that separation, not
+  by a renderer per format.
+- **The API** — `POST /api/reports` generates or returns the report already made for that
+  record, `GET /api/reports` lists summaries newest-first, and `GET /api/reports/[id]`
+  returns one document. Both segments are `force-dynamic`. `[id]/route.ts` exports `GET`
+  and nothing else: a report is written once by the generator and never afterwards, and a
+  test asserts the absence of the write handlers.
+- **The Reports pages** — the list renders real records with title, date, status, the
+  research it came from, and an empty state that says what to do rather than implying a
+  history that does not exist; the detail view makes the source/citation relationship
+  obvious, with each finding's statement, its basis, its verified quote and the source it
+  came from, and each source's title, domain, retrieval date and related findings.
+- **A print view** — chrome carries `data-print="hide"`, `@page` sets the paper margin, and
+  the palette flattens to black on white rather than being re-themed. There is no PDF
+  generation and no PDF dependency; the browser's own print dialog is the mechanism.
+- **Workspace integration** — the research panel offers report generation under exactly
+  the condition the service refuses on (`record.result !== undefined`), and links to the
+  existing report rather than offering to generate a second one when one already exists.
+- **Documentation** — `docs/REPORTS.md`, plus `ARCHITECTURE.md` §12 and this file.
+- **Tests** — seven new files covering the report schema, the deterministic builder, the
+  model path and its three degradations, the service, the store, the service layer, both
+  API routes and the extracted UI logic, alongside the schema tests from earlier in the
+  phase. Every model call is scripted through `createStubModelProvider`; no test contacts
+  anything.
+
+**Four things a reader should not assume.** Reports are **not persisted**: there is no
+database, so `report/store.ts` is a bounded process-local `Map` of 25 that does not
+survive a restart and is visible only from the process that produced it. There is **no
+ownership enforcement**, and the application does not pretend otherwise — §12's and §21's
+ownership checks require a user identity and there is none, which is blocked on Phase 5R;
+`POST /api/reports` is unauthenticated exactly as `/api/research` is, and when
+authentication lands report ownership is the first thing that must be added. There are
+**no render-level UI tests** — the project has no component test infrastructure and §18
+forbids new dependencies, so every presentation rule that can be decided without rendering
+was extracted into `src/lib/reports/view.ts` and tested there, and that a component draws
+what the rule says is covered by nothing. And **the prose path has not been exercised
+against a live model**: every test scripts the provider, so what is established is that a
+model's response is parsed, checked and rejected or degraded as specified — not that a
+given account and model write prose that survives the checks. The design anticipates the
+latter being common: a response citing no finding is refused outright, and the report is
+still complete when it is.
+
+**Two changes to earlier phases, recorded rather than glossed over.** `ResearchResult`
+gained `unresolvedQuestions: string[]`, populated from the extractor's own `gaps` — a
+Phase 5 type and a Phase 5 file, added because reading the gaps back out of
+`observations[].output` would have meant inspecting an internal shape, and because dropping
+them would have failed the requirement that a report preserve the questions a run left
+open. And `ModelOperation` gained `"report"`, which is the closed union working as
+designed: the compiler named every place that had to decide, including the development
+adapter, the test stub, and a `Record<ModelOperation, number>` literal in
+`agent/planner/index.test.ts` that needed one mechanical line. The existing `plan`,
+`execute_step`, `evaluate`, `research_plan` and `research_findings` cases are untouched.
+
+**Depends on Phases 3–5:** the provider interface, the untrusted-output discipline, the
+tool system's non-involvement, and above all the research record — whose findings already
+carry their sources, whose evidence already carries a verified quote and a denormalised
+URL, and whose conflicts and limits are already recorded rather than resolved. Phase 6
+added a layer above that record and changed none of its guarantees.
+
+---
+
+## Phase 6R — Real model provider
+
+> **Renumbered, not cancelled.** This was Phase 6 in the original roadmap and is
+> unchanged below. The work that actually happened as Phase 6 is the section above. See
+> *Why Phase 6 is reports, not the model provider*.
 
 **Goal:** one real model call, behind the interface that already exists.
 
@@ -426,15 +600,31 @@ run's sources are available only from its own record.
 
 ## Phase 8 — Reports & delivery
 
+> **Displaced, not cancelled.** Phase 6 built the reports subsystem ahead of this section,
+> against the research record rather than against persisted memory. What is left here is
+> what Phase 6 deliberately did not build.
+
 **Goal:** a result a person can read and act on.
 
-- Structured report generation from the run's artefacts. The raw per-step findings the
-  engine already records are the input this needs, and they are kept unmerged precisely
-  so a report can trace every claim back to its step.
-- Presentation in the workspace, and export or delivery.
-- Every claim in a report traceable to the step or tool execution that produced it.
+- ~~Structured report generation from the run's artefacts.~~ **Built as Phase 6**, from
+  the `ResearchResult` rather than from the raw per-step findings this section assumed: a
+  research run's findings already carry their sources, their verified quotes and their
+  URLs, so the chain this bullet asks for is traceable by construction. The per-step
+  findings remain unmerged and unread by the report layer.
+- **Presentation in the workspace** — built as Phase 6. **Export or delivery is not.**
+  Phase 6 renders a print-friendly view and stops there: no file format, no PDF, no email,
+  no scheduling, no delivery of any kind.
+- ~~Every claim in a report traceable to the step or tool execution that produced it.~~
+  **Built as Phase 6**, and strengthened: a claim is traceable to a *verified quote in a
+  retrieved source*, which is a stronger terminus than the step that produced it.
 
-**Depends on Phases 4–7.**
+What this phase still owns, then, is **delivery and export** — and the two things the
+original ordering assumed would exist by now: persisted runs (Phase 5R) and memory
+(Phase 7). Reports do not depend on either, which is why Phase 6 could arrive first, but
+a report that outlives the process that made it does.
+
+**Depends on Phases 5R and 7** for durable reports, and on Phase 6 — which it now follows
+rather than precedes — for the document itself.
 
 ---
 

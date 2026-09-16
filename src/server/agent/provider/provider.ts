@@ -25,7 +25,15 @@ import type { ExecutionProvider } from "@/types/agent";
  * adapter that had to tell them apart by inspecting its own `context` bag would
  * be guessing at a distinction the type system can simply state.
  *
- * The cost of the addition is that every adapter must handle the new members,
+ * Phase 6 added `report`, on the same reasoning and with one difference worth
+ * stating. The first five operations all ask a model to *produce work* — a plan,
+ * a step's output, a verdict, an extraction. `report` asks it to *write prose
+ * about work that has already been done and recorded*. That is a weaker ask, and
+ * the distinction is enforced rather than described: the report schema accepts
+ * finding indices and no other reference to the world, so an adapter answering
+ * this operation has nothing to invent with. See `src/types/report.ts`.
+ *
+ * The cost of each addition is that every adapter must handle the new member,
  * and that is the point of a closed union: the compiler names every one of them
  * rather than letting one silently fall through to `undefined`.
  */
@@ -34,7 +42,8 @@ export type ModelOperation =
   | "execute_step"
   | "evaluate"
   | "research_plan"
-  | "research_findings";
+  | "research_findings"
+  | "report";
 
 export interface ModelProviderRequest {
   operation: ModelOperation;

@@ -22,7 +22,7 @@ export function MarketingShell({ children }: { children: ReactNode }) {
       <footer className="border-t border-border">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-1 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <p>Orion — autonomous AI research agent.</p>
-          <p>Phase 2: application shell. The agent engine is not implemented.</p>
+          <p>Planning, tool use and evaluation run live. Retrieval needs an OpenRouter key.</p>
         </div>
       </footer>
     </div>

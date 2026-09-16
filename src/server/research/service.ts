@@ -206,6 +206,16 @@ export async function runResearch({
     findings: [] as ResearchFinding[],
     evidence: [] as ResearchEvidence[],
     conflicts: [] as ResearchConflict[],
+    /**
+     * What the sources did not establish, gathered across tasks.
+     *
+     * Accumulated here rather than read back out of the extraction observations,
+     * because a result's own field should not be reconstructed by inspecting
+     * another record's `output`. Deduplicated on the way in: a gap repeated by
+     * two tasks is one gap, and listing it twice would overstate how much is
+     * missing.
+     */
+    unresolvedQuestions: [] as string[],
   };
 
   const baseRecord = (status: ResearchRecord["status"]): ResearchRecord => ({
@@ -304,6 +314,11 @@ export async function runResearch({
           evidence: [],
           sources: [],
           conflicts: [],
+          // Empty rather than "everything": nothing was retrieved, so there is
+          // no gap the extractor could have reported. `errors` carries why the
+          // run stopped, and inventing gap text here would be the service
+          // writing prose it did not get from a source.
+          unresolvedQuestions: [],
           errors: [error],
           limitsReached: [],
           completedAt: now(),
@@ -630,6 +645,12 @@ export async function runResearch({
         });
       }
 
+      for (const gap of extraction.gaps) {
+        if (!collected.unresolvedQuestions.includes(gap)) {
+          collected.unresolvedQuestions.push(gap);
+        }
+      }
+
       task.status = "completed";
       task.updatedAt = now();
 
@@ -749,6 +770,7 @@ export async function runResearch({
       evidence: collected.evidence,
       sources: collected.sources,
       conflicts: collected.conflicts,
+      unresolvedQuestions: collected.unresolvedQuestions,
       errors: evaluation.errors,
       limitsReached: limitTracker.list(),
       completedAt: now(),
@@ -803,6 +825,7 @@ export async function runResearch({
         evidence: collected.evidence,
         sources: collected.sources,
         conflicts: collected.conflicts,
+        unresolvedQuestions: collected.unresolvedQuestions,
         errors: finished.errors,
         limitsReached: limitTracker.list(),
         completedAt: now(),

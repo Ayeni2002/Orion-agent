@@ -16,7 +16,11 @@
 export { AGENT_ID, runAgent } from "./runtime/runner";
 export type { RunAgentParams } from "./runtime/runner";
 
-export { parseModelJson, resolveModelProvider } from "./provider";
+export {
+  ModelProviderError,
+  parseModelJson,
+  resolveModelProvider,
+} from "./provider";
 export type {
   ModelOperation,
   ModelProvider,

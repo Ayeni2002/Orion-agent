@@ -40,7 +40,10 @@ export function MobileNav() {
   }, [isOpen]);
 
   return (
-    <div className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur lg:hidden">
+    <div
+      data-print="hide"
+      className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur lg:hidden"
+    >
       <div className="flex h-14 items-center justify-between gap-4 px-4 sm:px-6">
         <Link
           href="/"

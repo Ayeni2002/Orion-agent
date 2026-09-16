@@ -104,3 +104,73 @@
     font-family: var(--font-sans);
   }
 }
+
+/*
+ * Print.
+ *
+ * §16 of the Phase 6 brief asks for a clean print view and explicitly not for PDF
+ * generation, so this is the whole of it: a stylesheet that turns the report page
+ * into a document, and the browser's own print dialog as the mechanism. There is
+ * no second renderer, no library, and nothing that could disagree with what was on
+ * screen.
+ *
+ * The palette is flattened rather than re-themed. A report printed from dark mode
+ * would otherwise come out as dark panels on white paper — wasteful at best. The
+ * alternative, redefining every design token inside this block, would be a second
+ * palette to keep in step with the first, and the first time the two drifted the
+ * printed report would be the one nobody looked at.
+ *
+ * Flattening everything to black on white costs nothing, because the application
+ * already refuses to put meaning in colour alone: a status is a labelled
+ * `StatusIndicator`, not a coloured dot, so the dot losing its fill in print loses
+ * no information. The one exception is `mark` — the sentence flagging the
+ * generator applied is a *visual* signal with a text explanation beside it, and
+ * the amber is restored so the marked sentence still reads as marked.
+ */
+
+@page {
+  margin: 18mm 16mm;
+}
+
+@media print {
+  [data-print="hide"] {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body * {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #000 !important;
+  }
+
+  /* The one mark that carries meaning rather than decoration. */
+  mark {
+    background: #fde68a !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* The shell's own padding is a screen concern; `@page` supplies the margin. */
+  #main {
+    padding: 0 !important;
+  }
+
+  /* A heading stranded at the foot of a page, or a quote split across two, both
+     read as a document that was assembled carelessly — and the quote is the part
+     a reader is checking. */
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+
+  blockquote {
+    break-inside: avoid;
+  }
+}
+

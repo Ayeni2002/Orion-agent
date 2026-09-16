@@ -16,7 +16,10 @@ export function AppSidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="sticky top-0 hidden h-svh w-64 shrink-0 flex-col border-r border-border lg:flex">
+    <aside
+      data-print="hide"
+      className="sticky top-0 hidden h-svh w-64 shrink-0 flex-col border-r border-border lg:flex"
+    >
       <div className="flex h-14 items-center px-5">
         <Link
           href="/"
@@ -58,7 +61,8 @@ export function AppSidebar() {
 
       <div className="border-t border-border px-5 py-4">
         <p className="text-xs text-muted-foreground">
-          Phase 2 — application shell. The agent engine is not implemented yet.
+          Executions run live. They are held in memory and do not survive a
+          restart.
         </p>
       </div>
     </aside>

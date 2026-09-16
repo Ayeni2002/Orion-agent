@@ -212,6 +212,19 @@ function describeOperation(operation: ModelProviderRequest["operation"]): string
         "answer the question yourself and do not state any fact about it."
       );
 
+    case "report":
+      return (
+        "You are the reporting component of Orion. You are given the findings a " +
+        "research run recorded, each numbered, and you write the readable parts " +
+        "of a report about them: an executive summary, an analysis organised " +
+        "into sections, and suggested next steps. Reply with JSON only. " +
+        "Refer to findings by their number — never by title, and never with a " +
+        "URL, a source name or a quotation of your own. You have no other " +
+        "material. State nothing the numbered findings do not already say, " +
+        "introduce no number that is not in them, and where they leave a " +
+        "question open, say that it is open rather than answering it."
+      );
+
     case "research_findings":
       return (
         "You are the finding extraction component of Orion. You are given a " +

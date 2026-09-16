@@ -7,6 +7,7 @@ import {
   StatusIndicator,
   type StatusTone,
 } from "@/components/common/status-indicator";
+import { GenerateReportButton } from "@/components/reports/generate-report-button";
 import {
   Card,
   CardContent,
@@ -378,6 +379,30 @@ export function ResearchPanel({ record, isSubmitting }: ResearchPanelProps) {
           )}
         </CardContent>
       </Card>
+
+      {/*
+        §17's entry point, and the only one. The gate is `record.result` rather
+        than `record.status`, because that is exactly the condition the report
+        service refuses on: a record with no result cannot be reported on, and a
+        run that failed but recorded what it found up to that point still can be.
+        Matching the server's condition rather than approximating it with a status
+        check is what keeps the button from offering something that would 409.
+      */}
+      {record === null || record.result === undefined ? null : (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Report</CardTitle>
+            <CardDescription>
+              Turn this result into a document you can read, print and return to.
+              Every finding in it carries the passage and the URL it came from.
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent>
+            <GenerateReportButton researchId={record.id} />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

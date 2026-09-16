@@ -3,9 +3,10 @@ import { z } from "zod";
 /**
  * Validation for user-supplied objectives.
  *
- * This is the only schema Phase 1 needs: the workspace collects an objective
- * and validates it before the (not yet implemented) run begins. Schemas for
- * plans, tool payloads and results arrive with the phases that consume them.
+ * The workspace collects an objective and validates it before the run begins.
+ * This is the request contract only: the shapes the engine builds internally —
+ * a plan, a tool payload, a result — are validated where they are produced, not
+ * here, because they never arrive from a client.
  */
 
 export const OBJECTIVE_MIN_LENGTH = 10;

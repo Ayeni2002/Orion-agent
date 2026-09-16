@@ -17,9 +17,11 @@
  *     Owns connectivity only.
  *
  * Agent execution, projects, research and reports are each added as their own
- * service module here. Two of those exist: `./agent.ts` owns objective
- * validation, starts an execution and reads one back, and `./tools.ts` reports
- * the registered tool catalogue. Projects, research and reports are still
- * unimplemented.
+ * service module here. Four of those now exist: `./agent.ts` owns objective
+ * validation, starts an execution and reads one back; `./tools.ts` reports the
+ * registered tool catalogue; `./research.ts` validates a question, runs it to
+ * completion and projects the records a list needs; and `./reports.ts` turns a
+ * finished research result into a report, refusing with the status that says why
+ * when there is nothing to report on. Projects remain unimplemented.
  */
 export {};
