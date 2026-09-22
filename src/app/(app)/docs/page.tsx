@@ -150,16 +150,16 @@ const CAPABILITY_ROWS: readonly {
   {
     area: "Research layer",
     tone: "warning",
-    state: "Built, unverified live",
+    state: "Built, one route unverified live",
     detail:
-      "Planner, search tool, normaliser, finding extractor, evaluator and API are all built and tested against a stubbed transport. What no test establishes is that a given OpenRouter account and model honour the web plugin — a test that reached the real endpoint would fail on a plane, in CI, and the day a key rotates.",
+      "Planner, search tool, normaliser, finding extractor, evaluator and API are all built and tested against a stubbed transport. Two retrieval adapters exist: OpenRouter's web plugin, and Gemini's Google Search grounding. What no test establishes is that a given account and model honour either one — a test that reached the real endpoint would fail on a plane, in CI, and the day a key rotates. The OpenRouter route carries the passage each source is cited for; the Gemini route carries the page, not its text, so its findings report that they could not quote their sources.",
   },
   {
     area: "Web retrieval, by default",
     tone: "idle",
     state: "Not configured",
     detail:
-      "The default model adapter performs no inference and contacts nothing. Retrieval turns on only when LLM_ENDPOINT points at openrouter.ai; every other OpenAI-compatible endpoint resolves to the development adapter and a run stops at search_not_configured before planning, rather than appearing to search.",
+      "The default model adapter performs no inference and contacts nothing. Retrieval turns on two ways: LLM_ENDPOINT pointing at openrouter.ai, where the web plugin is a property of the host; or LLM_API_STYLE=gemini, where grounding is part of the endpoint and the credential and is therefore settled by the style alone. Every other OpenAI-compatible endpoint resolves to the development adapter and a run stops at search_not_configured before planning, rather than appearing to search.",
   },
   {
     area: "Persistence",
@@ -282,7 +282,7 @@ const PHASES: readonly {
     status: "Partly delivered",
     tone: "warning",
     detail:
-      "The OpenAI-compatible adapter exists and is selected by LLM_API_STYLE=openai, covering OpenRouter, Groq, Together, vLLM, LM Studio and OpenAI itself. What remains is confirming a live retrieval provider.",
+      "Two adapters reach a real provider: an OpenAI-compatible one selected by LLM_API_STYLE=openai, covering OpenRouter, Groq, Together, vLLM, LM Studio and OpenAI itself; and a native Gemini one speaking generateContent, which is what makes Google Search grounding reachable at all — the compatibility endpoint does not expose it. What remains is confirming either retrieval route against a live account.",
   },
   {
     phase: "7",
@@ -560,7 +560,8 @@ export default function DocsPage() {
               <Fact term="Validation">Zod schemas at every untrusted boundary</Fact>
               <Fact term="Testing">Vitest, node environment, no network or credentials needed</Fact>
               <Fact term="Model provider">
-                Interface plus two live adapters and a scripted test stub — no SDK
+                Interface plus three adapters — development, OpenAI-compatible
+                and Gemini — and a scripted test stub; no SDK
               </Fact>
               <Fact term="Database">
                 Supabase clients installed; no schema, no tables, no migrations
@@ -739,7 +740,7 @@ export default function DocsPage() {
               title: "Research layer",
               path: "src/server/research/",
               parts:
-                "provider — the ResearchProvider interface, the OpenRouter web-search adapter, the development adapter; planner; tools — research.search; findings — source text to claims; evaluator; normalize.ts — canonicalisation and deduplication; url-safety.ts; permission.ts — the one widened grant, in its own file so it is findable; service.ts — the run loop.",
+                "provider — the ResearchProvider interface, the OpenRouter web-search adapter, the Gemini grounding adapter, the development adapter; planner; tools — research.search; findings — source text to claims; evaluator; normalize.ts — canonicalisation and deduplication; url-safety.ts; permission.ts — the one widened grant, in its own file so it is findable; service.ts — the run loop.",
             },
             {
               title: "Report layer",
@@ -1025,22 +1026,33 @@ npm run dev`}</CodeBlock>
           <CardContent className="space-y-4">
             <dl className="grid gap-4 sm:grid-cols-2">
               <Fact term="LLM_API_STYLE">
-                <Code>dev</Code> (default) or <Code>openai</Code>. Any other
-                style is rejected unless an adapter exists for it, because
-                naming a style Orion cannot construct would turn a configuration
-                mistake into a run that appears to use a real model and does not.
+                <Code>dev</Code> (default), <Code>openai</Code> or{" "}
+                <Code>gemini</Code>. Any other style is rejected unless an
+                adapter exists for it, because naming a style Orion cannot
+                construct would turn a configuration mistake into a run that
+                appears to use a real model and does not.
               </Fact>
               <Fact term="LLM_ENDPOINT">
-                Base URL only. Retrieval turns on when this points at{" "}
-                <code className="font-mono text-xs">openrouter.ai</code>.
+                Base URL only, and the path suffix is the style&rsquo;s
+                business. Optional for <Code>gemini</Code>, which has one
+                canonical host; required for <Code>openai</Code>, which names a
+                protocol many vendors speak.
               </Fact>
-              <Fact term="LLM_MODEL">The endpoint&rsquo;s own model id.</Fact>
+              <Fact term="LLM_MODEL">
+                The endpoint&rsquo;s own model id. Required for every style but{" "}
+                <Code>dev</Code> — a defaulted model id would fail later as a
+                404 from the provider rather than here as a sentence naming the
+                variable.
+              </Fact>
               <Fact term="LLM_API_KEY">
-                Optional — a local endpoint needs none.
+                Optional — a local endpoint needs none. Sent as a header, never
+                as a query parameter, because a query string is written to proxy
+                logs, access logs and error messages.
               </Fact>
               <Fact term="RESEARCH_SEARCH_MODEL">
                 Optionally names a cheaper model for fetching; defaults to{" "}
-                <Code>LLM_MODEL</Code>.
+                <Code>LLM_MODEL</Code>. Means the same thing on both retrieval
+                routes: a cheaper model fetching, a stronger one reasoning.
               </Fact>
               <Fact term="RESEARCH_MAX_*">
                 Five ceilings: tasks (5), sources per task (5), total sources
@@ -1051,16 +1063,36 @@ npm run dev`}</CodeBlock>
 
             <div className="rounded-md border border-border bg-muted px-3 py-2">
               <p className="text-xs text-muted-foreground">
-                Turning retrieval on, end to end — there is no separate research
-                credential, because retrieval is a chat completion with a plugin
-                attached:
+                Turning retrieval on, end to end. There is no separate research
+                credential, because retrieval is a model call with a search
+                tool attached — the key that plans is the key that fetches:
               </p>
               <pre className="mt-2 overflow-x-auto font-mono text-xs leading-relaxed">
-                <code>{`LLM_API_STYLE=openai
+                <code>{`# OpenRouter — the route that returns cited passages
+LLM_API_STYLE=openai
 LLM_ENDPOINT=https://openrouter.ai/api/v1
 LLM_MODEL=openai/gpt-4o
 LLM_API_KEY=<your key>`}</code>
               </pre>
+              <pre className="mt-3 overflow-x-auto font-mono text-xs leading-relaxed">
+                <code>{`# Gemini — grounding is on the style, so no endpoint is needed
+LLM_API_STYLE=gemini
+LLM_MODEL=gemini-2.5-flash
+LLM_API_KEY=<your key>`}</code>
+              </pre>
+              <p className="mt-3 text-xs text-muted-foreground">
+                The Gemini route is the thinner of the two, and the difference
+                is worth knowing before choosing it. Grounding returns the pages
+                a search found and not their text, so a source arrives with a
+                URL and a title and no passage, and the findings built on it say
+                they could not quote it. The alternative was refused on purpose:{" "}
+                <code className="font-mono text-xs">
+                  groundingSupports[].segment.text
+                </code>{" "}
+                is the model&rsquo;s own prose, and treating it as source text
+                would make the verbatim-quote check pass against a sentence no
+                page ever contained.
+              </p>
             </div>
 
             <p className="text-xs text-muted-foreground">

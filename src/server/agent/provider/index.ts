@@ -1,5 +1,6 @@
 import { getModelProviderConfig } from "@/lib/env";
 import { createDevModelProvider } from "./dev-provider";
+import { createGeminiProvider } from "./gemini-provider";
 import { createOpenAiCompatibleProvider } from "./openai-provider";
 import type { ModelProvider } from "./provider";
 
@@ -25,6 +26,13 @@ export {
   OPENAI_STYLE_PROVIDER_ID,
 } from "./openai-provider";
 export type { OpenAiCompatibleProviderConfig } from "./openai-provider";
+export {
+  createGeminiProvider,
+  DEFAULT_GEMINI_TIMEOUT_MS,
+  GEMINI_STYLE_PROVIDER_ID,
+} from "./gemini-provider";
+export type { GeminiProviderConfig } from "./gemini-provider";
+export { describeOperation } from "./prompts";
 
 /**
  * Chooses the provider for this run.
@@ -37,12 +45,12 @@ export type { OpenAiCompatibleProviderConfig } from "./openai-provider";
  * configured would make every downstream result a lie, which is a far worse
  * outcome than an error at startup.
  *
- * Two styles exist as of Phase 5. `dev` is the deterministic local adapter;
- * `openai` is any endpoint speaking the OpenAI-compatible chat completions
- * protocol, which is how OpenRouter, Groq, Together, vLLM and OpenAI itself are
- * all reached. The switch is exhaustive over `SUPPORTED_API_STYLES`, so adding
- * a style without adding its adapter is a compile error rather than a runtime
- * surprise.
+ * Three styles exist as of the Gemini work. `dev` is the deterministic local
+ * adapter; `openai` is any endpoint speaking the OpenAI-compatible chat
+ * completions protocol, which is how OpenRouter, Groq, Together, vLLM and
+ * OpenAI itself are all reached; `gemini` is Google's native `generateContent`.
+ * The switch is exhaustive over `SUPPORTED_API_STYLES`, so adding a style
+ * without adding its adapter is a compile error rather than a runtime surprise.
  *
  * Returns a fresh instance per call. Providers are cheap and stateless, and
  * constructing one per execution means no credential or connection is cached
@@ -69,6 +77,24 @@ export function resolveModelProvider(): ModelProvider {
       }
 
       return createOpenAiCompatibleProvider({
+        endpoint: config.endpoint,
+        model: config.model,
+      });
+    }
+
+    case "gemini": {
+      // The endpoint is present for this style even though `LLM_ENDPOINT` may
+      // not be set, because `getModelProviderConfig` fills in
+      // `GEMINI_API_ENDPOINT`. The check below is therefore about `model` in
+      // practice — but it is written the same way as the branch above, so the
+      // two read alike and both fail loudly if that defaulting is ever removed.
+      if (config.endpoint === undefined || config.model === undefined) {
+        throw new Error(
+          'The "gemini" API style needs LLM_MODEL, and an endpoint it cannot derive.',
+        );
+      }
+
+      return createGeminiProvider({
         endpoint: config.endpoint,
         model: config.model,
       });

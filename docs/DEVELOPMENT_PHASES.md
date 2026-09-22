@@ -171,6 +171,39 @@ data anywhere. Every list is an explicitly empty typed constant rendered through
 `EmptyState`; every control belonging to a later phase is `disabled` and says so. No
 invented statistics, no simulated progress, no placeholder results.
 
+**Amended 2026-09-17 — the disabled-control rule.** The second clause now reads: **a
+control belonging to a later phase is not rendered at all, and the section states the
+boundary in prose.** Three controls were removed under this amendment — the "Create
+project" field and button on `/projects`, the sign-in field and button on `/settings`, and
+the project selector in the workspace objective form.
+
+Each had been `disabled`, each carried a paragraph defending the choice, and **each defence
+was sound about the control it described**: a disabled control beside an explanation is
+better than an enabled one that accepts input it would discard. What that reasoning missed
+is aggregation. It is about one control on one page, and a visitor does not meet one — they
+meet a dead button on `/projects`, another on `/settings`, and a third on `/workspace`
+sitting directly above the button that works. The honest label, repeated three times, still
+reads as three broken features, and a broken feature is indistinguishable from a bug.
+
+**The rule was right about honesty and wrong about rendering.** A control that is not
+rendered cannot be mistaken for one that is broken, and stating the boundary in a sentence
+is the same honesty with less to misread. The cards themselves were kept rather than
+deleted: each still says what will arrive and why it is not here, so nothing disappears
+without explanation.
+
+The amendment does **not** extend to `Research this` on `/research`, which stays `disabled`.
+That case was re-examined and kept, because it differs in kind rather than degree: it
+reflects a *configured* state that can change, it is read from the live capabilities
+endpoint rather than asserted, and an alert on the same page names the boundary before a
+question is typed. It is now the only disabled control in the application.
+
+**Delivered alongside the amendment: the theme control.** This was the one later-phase
+control with a shortcut behind it — the dark palette has existed in `globals.css` since
+Phase 1, so what was missing was a switch rather than a backend, and a missing
+implementation is worth building rather than apologising for. It is real and working, mounted
+on `/settings` and in the app chrome; see `ARCHITECTURE.md` §2. It is not a phase of its own,
+so it is recorded here rather than given a number.
+
 ---
 
 ## Phase 3 — Agent engine ✅
@@ -564,22 +597,85 @@ added a layer above that record and changed none of its guarantees.
 
 What remains for this phase:
 
-- **A live-verified retrieval provider.** `ResearchProvider` now has a real
-  implementation — `research/provider/openrouter-search-provider.ts` — but the one thing
-  no test can establish is that a given OpenRouter account and model honour the `web`
-  plugin, because a test that reached the real endpoint would fail on a plane, in CI, and
-  the day a key is rotated. The adapter is built so that a wrong guess fails safe rather
-  than fabricating evidence; confirming it against a live account is one `curl`, quoted in
-  `docs/RESEARCH.md`.
+- **A live-verified retrieval provider.** `ResearchProvider` now has two real
+  implementations — `research/provider/openrouter-search-provider.ts` and
+  `research/provider/gemini-search-provider.ts` — but the one thing no test can establish
+  is that a given account and model honour them, because a test that reached a real
+  endpoint would fail on a plane, in CI, and the day a key is rotated. Both adapters are
+  built so that a wrong guess fails safe rather than fabricating evidence; confirming
+  either against a live account is one `curl`, quoted in `docs/RESEARCH.md`.
 - Prompt construction kept isolated from the transport, so swapping a vendor does not
   mean rewriting prompts.
 - Response parsing that treats model output as untrusted, as the planner already does.
 - Provider selection by environment, which is already how resolution works.
-- Any second wire protocol — Anthropic's messages API, Gemini's `generateContent` — as a
-  new style and a new adapter beside the existing one.
+- ~~Any second wire protocol — Anthropic's messages API, Gemini's `generateContent` — as a
+  new style and a new adapter beside the existing one.~~ **Built.** See the Gemini record
+  below; Anthropic's messages API remains the example if a third is ever wanted.
 
 **Depends on Phase 3:** the interface, the resolution point, and the credential
 containment in `src/lib/env.ts` are all in place.
+
+---
+
+## Phase 6R (Gemini) — the second wire protocol, and a second retrieval route
+
+**Goal:** use Gemini as the agent, which turned out to require a second retrieval route
+rather than only a second model adapter.
+
+**Why a style rather than a config change.** Gemini is already reachable for inference
+through `LLM_API_STYLE=openai` pointed at Google's OpenAI-compatibility endpoint, and that
+remains a legitimate configuration for agent runs. It is not enough: that surface does not
+expose Google Search grounding, so `/research`, `/reports` and everything downstream of
+retrieval would have stayed permanently unavailable. Grounding lives on `generateContent`,
+so reaching it meant speaking `generateContent`.
+
+**What landed:**
+
+- `lib/env.ts` — `SUPPORTED_API_STYLES` gains `"gemini"`, and it is the only style with a
+  default endpoint (`GEMINI_API_ENDPOINT`). One vendor at one canonical host, so requiring
+  the operator to retype a constant URL would add a typo surface and buy nothing; `openai`
+  keeps its requirement because it names a protocol many vendors speak. `LLM_MODEL` stays
+  required for both, because a defaulted model id would fail as a 404 from the provider
+  rather than as a sentence naming the variable.
+- `agent/provider/gemini-provider.ts` — native `generateContent`, key in `x-goog-api-key`
+  and never `?key=`, `responseMimeType` sent only when JSON was requested, Gemini's
+  `STOP`/`MAX_TOKENS` mapped onto the engine's three finish reasons with everything else
+  becoming `error`.
+- `research/provider/gemini-search-provider.ts` — Google Search grounding behind the same
+  `ResearchProvider` seam.
+- `agent/provider/prompts.ts` — `describeOperation`, moved verbatim out of
+  `openai-provider.ts` so the two adapters share one definition. A copied system prompt
+  drifts invisibly: a changed sentence is a change in the quality of a plan, not a compile
+  error and not a failing test.
+- `research/provider/index.ts` — the `gemini` branch, which decides by *style* rather than
+  by host. Grounding is part of the one endpoint and the one credential, so there is
+  nothing to inspect and no lookalike host to defend against — the stronger form of the
+  "derived rather than declared" property `env.ts` asks for. `isSearchCapableEndpoint` and
+  `OPENROUTER_HOST` remain, now clearly scoped to the `openai` branch that needs them.
+
+**The honest limitation, stated here rather than discovered from a thin result.** Google's
+grounding returns the pages a search found and **not their text**. So a source from this
+route carries a URL and a title and no `content`, and a run's findings report that they
+could not quote it rather than quoting something no page contained. The alternative was
+available and was refused: `groundingSupports[].segment.text` is the model's own prose, and
+copying it into a source's `content` would make the finding extractor's verbatim-quote check
+pass against a sentence no page ever contained — fabricated evidence wearing a citation.
+OpenRouter's route carries the cited passage and remains the one that produces quoted
+findings.
+
+**What is verified and what is not.** Typecheck, the full test suite and the build are the
+gates, and both new adapters are covered by `fetch`-stubbed tests with no network and no
+real credential. The retrieval path is **not yet live-verified**: the exact spelling of
+`groundingMetadata` was written from documentation rather than from an observed call. The
+adapter is built so this fails safe — an unrecognised shape yields no chunks and
+`performedRetrieval: false`, so the run reports `insufficient` rather than inventing a
+source — and `docs/RESEARCH.md` gives the `curl` and the three outcomes to look for. Until
+that command has been run against a live key, this route should be described as
+implemented and untested rather than as working.
+
+**Depends on Phases 3 and 5:** the `ModelProvider` and `ResearchProvider` seams, the shared
+transport helpers, and the credential containment in `lib/env.ts`. Neither adapter adds an
+execution path, a permission, or an environment variable.
 
 ---
 

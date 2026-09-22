@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getModelProviderConfig, getResearchConfig, readModelApiKey } from "./env";
+import { GEMINI_API_ENDPOINT } from "./env";
 
 /**
  * Environment resolution for the model provider.
@@ -108,6 +109,79 @@ describe("getModelProviderConfig", () => {
     vi.stubEnv("LLM_API_STYLE", "dev");
 
     expect(() => getModelProviderConfig()).not.toThrow();
+  });
+});
+
+/**
+ * The one style with a default endpoint.
+ *
+ * The asymmetry with `openai` is deliberate and is what this block exists to
+ * pin down: `openai` names a protocol many vendors speak, so it must be told
+ * where to go, while `gemini` names one vendor at one canonical host. The two
+ * assertions that matter most are that the default is filled in when
+ * `LLM_ENDPOINT` is unset, and that an explicit value still wins — because a
+ * default that could not be overridden would make a proxy or a regional host
+ * unreachable, and a test suite that could not point the adapter at a stub host.
+ *
+ * Note what is *not* relaxed: `LLM_MODEL` stays required. Google retires and
+ * renames model ids, so a default written today becomes a wrong answer later,
+ * and it would fail as a 404 from Google rather than as a sentence naming the
+ * variable to fix.
+ */
+describe("getModelProviderConfig with the gemini style", () => {
+  function configureGemini() {
+    clearEnv();
+    vi.stubEnv("LLM_API_STYLE", "gemini");
+    vi.stubEnv("LLM_MODEL", "gemini-2.0-flash");
+  }
+
+  it("reads a configured gemini style", () => {
+    configureGemini();
+    vi.stubEnv("LLM_ENDPOINT", "https://proxy.example/v1beta");
+
+    expect(getModelProviderConfig()).toStrictEqual({
+      style: "gemini",
+      endpoint: "https://proxy.example/v1beta",
+      model: "gemini-2.0-flash",
+      hasApiKey: false,
+    });
+  });
+
+  it("defaults the endpoint when none is set", () => {
+    configureGemini();
+
+    // The whole point of the asymmetry: one vendor, one canonical base, so
+    // requiring the operator to retype it would add a typo surface and buy
+    // nothing.
+    expect(getModelProviderConfig().endpoint).toBe(GEMINI_API_ENDPOINT);
+  });
+
+  it("lets an explicit endpoint override the default", () => {
+    configureGemini();
+    vi.stubEnv("LLM_ENDPOINT", "https://proxy.example/v1beta");
+
+    // Without this, a proxy, a regional host, and every adapter test would be
+    // unable to say where to send the request.
+    expect(getModelProviderConfig().endpoint).toBe(
+      "https://proxy.example/v1beta",
+    );
+  });
+
+  it("still refuses a gemini style with no model", () => {
+    clearEnv();
+    vi.stubEnv("LLM_API_STYLE", "gemini");
+
+    expect(() => getModelProviderConfig()).toThrow(/LLM_MODEL/);
+  });
+
+  // The default is validated on the same path as everything else rather than
+  // trusted because it is a constant, so a malformed value still fails here —
+  // and the message still names the variable an operator can actually fix.
+  it("refuses a malformed endpoint even though a default exists", () => {
+    configureGemini();
+    vi.stubEnv("LLM_ENDPOINT", "generativelanguage.googleapis.com");
+
+    expect(() => getModelProviderConfig()).toThrow(/LLM_ENDPOINT/);
   });
 });
 

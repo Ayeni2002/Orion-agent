@@ -9,9 +9,12 @@
 > What backs the engine out of the box is still deliberately thin: a
 > **deterministic development adapter** rather than a real model, and a **catalogue
 > holding exactly one tool**, a read-only text measurement. **Retrieval is real when
-> configured** — point `LLM_ENDPOINT` at OpenRouter and `research.search` reaches its
-> web-search plugin — and reports itself as unconfigured everywhere else, so a run
-> stops with `search_not_configured` rather than appearing to search. The database,
+> configured**, by either of two routes — point `LLM_ENDPOINT` at OpenRouter and
+> `research.search` reaches its web-search plugin, or set `LLM_API_STYLE=gemini` and it
+> reaches Google Search grounding — and reports itself as unconfigured everywhere else,
+> so a run stops with `search_not_configured` rather than appearing to search. The two
+> routes do not return the same kind of evidence: OpenRouter's citations carry the cited
+> passage, while Google's grounding returns the pages without their text. The database,
 > memory and reports described below under *future* **do not exist**. Sections record
 > what is real and what is not; nothing here claims a capability the code does not
 > have.
@@ -48,6 +51,7 @@ src/app/           routes — layout, pages, loading/error boundaries
 src/components/
   common/          EmptyState, PageHeader, StatusIndicator — shared presentation
   layout/          application chrome (shells, sidebar, navigation)
+  theme/           the colour-scheme control and the store behind it
   ui/              shadcn/ui primitives — presentation only
   workspace/       workspace-specific composition
 ```
@@ -56,6 +60,34 @@ src/components/
 (`"use client"`) only when it needs state, effects, or browser APIs — for example
 `src/components/workspace/workspace-console.tsx`, which owns the execution, the
 request that produces it, and the capability check it performs on mount.
+
+**Theming is a class on `<html>` and nothing else.** `globals.css` holds the light
+palette on `:root` and the dark overrides on `.dark`, so there is no provider, no
+stylesheet swap and no dependency — §18 forbids one, and `next-themes` would be a
+package to keep in step for what is one `classList.toggle`. The rules are pure
+functions in `src/lib/theme.ts` and are tested there; `src/components/theme/`
+holds the DOM half and a module-level store, so the three places the control is
+mounted (the `/settings` card, the sidebar and the mobile panel) cannot disagree
+about the current preference.
+
+Two properties of that design are deliberate and easy to undo by accident:
+
+- **The server never reads the preference.** Reading a cookie in the root layout
+  would let it render the right class directly, but `cookies()` opts the whole
+  route tree out of static rendering, and `/` being static is preserved on
+  purpose. Instead a synchronous inline script at the top of `<body>` corrects
+  `<html>` before any content below it is parsed, so there is no flash. It is
+  the only script in the application and the only reason `suppressHydrationWarning`
+  appears on `<html>`.
+- **`useSyncExternalStore`, not `useState`.** The sidebar and the mobile
+  navigation are both mounted at once — one is hidden by a breakpoint, not
+  unmounted — so per-instance state would let them disagree. The snapshot is
+  cached and `getServerSnapshot` is a constant, because reading `localStorage`
+  during render is what would cause a hydration mismatch.
+
+The preference is per-browser and is not stored anywhere else. There is no
+account to attach it to, which is the same absence that makes ownership
+unenforceable; see §4.
 
 **Route-level states are first-class**, not an afterthought: `loading.tsx`,
 `error.tsx` and `not-found.tsx` sit beside the routes they cover, so every route has
@@ -182,64 +214,103 @@ as a change rather than presented as an addition.
 
 ## 6. Model abstraction
 
-**The interface is implemented. No external provider is.** The only adapter that exists
-is deterministic and local; no vendor SDK is a dependency and no vendor is named in the
-engine.
+**The interface is implemented, and two external providers reach it.** No vendor SDK is a
+dependency and no vendor is named in the engine; what exists instead is a `dev` adapter
+that contacts nothing, an OpenAI-compatible adapter that reaches any `/chat/completions`
+host, and a native Gemini adapter that speaks `generateContent`.
 
 ```
-src/server/agent/provider/provider.ts       the interface, request/response, JSON parsing
-src/server/agent/provider/dev-provider.ts   the deterministic development adapter
-src/server/agent/provider/stub-provider.ts  a scripted adapter, for tests
-src/server/agent/provider/index.ts          resolveModelProvider() — the one place a
-                                            concrete provider is named
+src/server/agent/provider/provider.ts         the interface, request/response, JSON parsing
+src/server/agent/provider/prompts.ts          the six system prompts, shared by both
+                                              external adapters
+src/server/agent/provider/dev-provider.ts     the deterministic development adapter
+src/server/agent/provider/stub-provider.ts    a scripted adapter, for tests
+src/server/agent/provider/openai-provider.ts  any /chat/completions host
+src/server/agent/provider/gemini-provider.ts  Google's native generateContent
+src/server/agent/provider/index.ts            resolveModelProvider() — the one place a
+                                              concrete provider is named
 ```
 
 The engine talks to `ModelProvider` and knows nothing else: not a wire format, not a
 vendor's message shape, not a base URL. `ModelProvider` has several independent
 implementations of the same interface, which is the practical evidence that the seam is
-real rather than intended.
+real rather than intended — and the Gemini adapter is the strongest form of that evidence,
+because it was added without changing the interface, the planner, the executor or the
+evaluator at all.
+
+`prompts.ts` exists because there are now two external adapters. The six system prompts
+were private to `openai-provider.ts`; copying them into the Gemini adapter would have
+created two copies that drift invisibly, since a reworded prompt changes the quality of a
+plan rather than failing a compile or a test. They are shared, byte-identical, and
+`gemini-provider.test.ts` asserts the Gemini adapter carries the shared text rather than a
+Gemini-specific copy of it.
 
 **The development adapter is a stand-in, and says so.** It performs no inference and
 contacts nothing; its plan is a fixed analytical skeleton parameterised by the objective
 text. It is never presented as AI output — `isExternal` is `false`, and every execution
 carries its provider descriptor so the workspace can state which one ran.
 
-**The real adapter is one file, and it is not vendor-specific.** `provider/openai-provider.ts`
-speaks the OpenAI-compatible `/chat/completions` protocol, which OpenRouter, Groq,
-Together, Fireworks, vLLM, LM Studio and OpenAI itself all speak. `LLM_API_STYLE` names
-the *protocol* rather than the vendor, so reaching a new service is a change to
-`LLM_ENDPOINT` and not a change to code. A genuinely different protocol — Anthropic's
-messages API, Gemini's `generateContent` — would be a new member of
-`SUPPORTED_API_STYLES` and a new adapter beside this one.
+**The real adapters are one file each, and neither is vendor-specific where it can avoid
+it.** `provider/openai-provider.ts` speaks the OpenAI-compatible `/chat/completions`
+protocol, which OpenRouter, Groq, Together, Fireworks, vLLM, LM Studio and OpenAI itself
+all speak. `LLM_API_STYLE` names the *protocol* rather than the vendor, so reaching a new
+service is a change to `LLM_ENDPOINT` and not a change to code.
+`provider/gemini-provider.ts` speaks Google's native `generateContent`, which is a
+genuinely different protocol and therefore a new member of `SUPPORTED_API_STYLES` and a new
+adapter beside the first — exactly the change the first adapter's comment predicted, made
+rather than described. It is a *separate* style rather than a special case inside `openai`
+for one reason: Google's OpenAI-compatibility endpoint does not expose Search grounding, so
+a configuration reaching Gemini that way gets inference and no retrieval, permanently.
+
+**The two model adapters share their prompts and nothing else.**
+`provider/prompts.ts` holds `describeOperation` — the six system prompts, one per
+`ModelOperation` — because both adapters need them and a copied prompt drifts invisibly: a
+changed sentence is a change in the quality of a plan or an evaluation, not a compile error
+and not a failing test. Sharing one definition is the only version of this that cannot
+happen. Everything else is per-adapter, including the timeout constant, so raising a bound
+for one provider cannot silently change the other.
 
 **Resolution does not fall back.** If `LLM_API_STYLE` names a style Orion does not
-implement, or a remote style is configured without an endpoint or a model,
-`getModelProviderConfig` throws and the run fails loudly. Quietly running the development
-adapter while an operator believes a real model is configured would make every downstream
-result a lie.
+implement, or a remote style is configured without a model, `getModelProviderConfig` throws
+and the run fails loudly. Quietly running the development adapter while an operator believes
+a real model is configured would make every downstream result a lie.
+
+**One style has a default endpoint, and only one.** `gemini` is one vendor at one canonical
+host, so `getModelProviderConfig` fills in `GEMINI_API_ENDPOINT` when `LLM_ENDPOINT` is
+unset; an explicit value still overrides it, which is the seam a proxy and every test uses.
+`openai` gets no default because it names a protocol many vendors speak, so a default would
+be a guess about which one was meant. `LLM_MODEL` is required for both: the endpoint is a
+constant this repository can know and a model id is not, since providers retire and rename
+them. A defaulted model id would fail as a 404 from the provider rather than as a sentence
+naming the variable to fix.
 
 **The credential never leaves `src/lib/env.ts`.** `getModelProviderConfig` reads
 `LLM_API_KEY` *only* to compute a `hasApiKey` boolean and never returns the value. That
 matters more now than it did when nothing consumed the key: the configuration object is
 spread into provider descriptors, returned from services and rendered by the settings
 screen, so a credential living on it would travel with every copy. The one function that
-does return the secret is `readModelApiKey`, whose sole caller is the adapter, which
-writes it into an `Authorization` header and drops it. §10's one-reader rule is what makes
-this enforceable rather than aspirational.
+does return the secret is `readModelApiKey`, whose sole caller is the adapter, which writes
+it into a header — `Authorization` for `openai`, `x-goog-api-key` for `gemini`, and never a
+query parameter, because a URL is copied into every log that sees the request line — and
+drops it. §10's one-reader rule is what makes this enforceable rather than aspirational.
 
 `.env.example` carries the provider-neutral names, now live:
 
 ```
-LLM_API_STYLE=   # "dev" (default) | "openai". Any other value fails loudly.
-LLM_ENDPOINT=    # Base URL, without the /chat/completions suffix.
+LLM_API_STYLE=   # "dev" (default) | "openai" | "gemini". Any other value fails loudly.
+LLM_ENDPOINT=    # Base URL, before the style's own path. Optional for "gemini" only.
 LLM_MODEL=       # Required for every style except "dev".
 LLM_API_KEY=     # Optional — a local endpoint such as vLLM needs none.
 ```
 
-**Not yet present:** a research/search adapter. Phase 5 adds a second seam beside this
-one, through which retrieval reaches the network; the model adapter above is never asked
-to search, and the search adapter is never asked to reason. Keeping those apart is what
-makes "the model did not fetch this" a checkable claim rather than a hope.
+**The second seam exists, and is kept apart from this one.** Retrieval reaches the network
+through `ResearchProvider`, not through the model adapter; the model adapter is never asked
+to search, and the search adapter is never asked to reason. Two retrieval adapters
+implement it today — OpenRouter's web plugin and Google's grounding — and the Gemini work
+is what makes the separation load-bearing rather than merely tidy: both Gemini adapters
+speak the same host and the same protocol, so the only thing keeping "the model did not
+fetch this" a checkable claim is that one file reasons and the other fetches. A single
+adapter that did both would make the claim unverifiable from the code.
 
 
 ## 7. Tool system
@@ -457,23 +528,43 @@ that constructs an executor without arguments, and `/api/tools` report exactly w
 reported in Phase 4. Research reaches the network by constructing an executor with the
 widened grant, which is a visible act in one place rather than a default nobody sees.
 
-**`resolveResearchProvider()` names one host, deliberately.** It returns the web-search
-adapter when `LLM_ENDPOINT` is on `openrouter.ai`, and the development adapter otherwise
-— including for every other OpenAI-compatible endpoint. The narrowness is the design, not
-a missing case: `LLM_API_STYLE=openai` covers Groq, Together, vLLM, LM Studio and OpenAI
-itself, all of which speak `/chat/completions` and none of which has a `web` plugin. A
-plugin sent to one of those would be dropped, the model would answer from its own weights,
-and the run would be configured, would be reached, and would retrieve nothing. So the
-endpoint decides, `isConfigured` follows, and a run against anything else stops at
-`search_not_configured` with a message naming what to change.
+**`resolveResearchProvider()` decides two different ways, and the difference is the design.**
+For `LLM_API_STYLE=openai` it names one host: the web-search adapter when `LLM_ENDPOINT` is
+on `openrouter.ai`, the development adapter otherwise — including for every other
+OpenAI-compatible endpoint. There the narrowness is the design, not a missing case:
+`LLM_API_STYLE=openai` covers Groq, Together, vLLM, LM Studio and OpenAI itself, all of
+which speak `/chat/completions` and none of which has a `web` plugin. A plugin sent to one
+of those would be dropped, the model would answer from its own weights, and the run would be
+configured, would be reached, and would retrieve nothing. So the endpoint decides,
+`isConfigured` follows, and a run against anything else stops at `search_not_configured`
+with a message naming what to change.
 
-**Two properties make the adapter safe without a verified live call.** It never reads the
-model's prose — only `url_citation` annotations become sources — so an endpoint that
-ignores the plugin cannot put generated text, or a URL inside generated text, into a
-finding as though it were retrieved. And a response carrying no citations reports
-`performedRetrieval: false`, because "found nothing" and "never looked" are
-indistinguishable from the client and only one of those readings can fabricate evidence.
-Both are asserted in `research/provider/openrouter-search-provider.test.ts`.
+For `LLM_API_STYLE=gemini` it inspects nothing, because there is nothing to inspect.
+Grounding is not a plugin a host may or may not implement; it is part of the one endpoint
+and the one credential, so the style settles the question — which is the stronger form of
+the property `env.ts` asks for when it says retrieval availability should be *derived rather
+than declared*. It also means this branch has no lookalike-host case to defend against,
+where the `openai` branch has five in its test file.
+
+**The properties that make a retrieval adapter safe without a verified live call** hold for
+both, and are asserted in each adapter's test file. Neither ever reads the model's prose —
+the OpenRouter adapter reads only `url_citation` annotations, the Gemini adapter only
+`groundingChunks[].web` and never `groundingSupports[].segment.text` or `candidate.content`
+— so an endpoint that ignores the search instruction cannot put generated text, or a URL
+inside generated text, into a finding as though it were retrieved. And a response carrying
+no citations reports `performedRetrieval: false`, because "found nothing" and "never looked"
+are indistinguishable from the client and only one of those readings can fabricate evidence.
+For Gemini that property does double duty: the shape of `groundingMetadata` is the one thing
+in that adapter written from documentation rather than from an observed call, so a misread
+payload yields no chunks and an honest `insufficient` rather than a fabricated source.
+
+**The two retrieval routes do not return the same kind of evidence**, and the difference
+belongs to the providers. OpenRouter's citations carry the cited passage, so findings from
+that route quote their sources. Google's grounding returns the pages a search found and not
+their text, so a source from that route carries a URL and a title and no `content` — and a
+run's findings report that they could not quote it rather than quoting something no page
+contained. The Gemini route is the thinner of the two, and `docs/RESEARCH.md` says so in
+full rather than leaving it to be discovered from a thin result.
 
 **Security.** Orion does not dereference a source URL in this phase, so `url-safety.ts`
 is a recording and rendering guard rather than a fetcher's guard. It rejects dangerous

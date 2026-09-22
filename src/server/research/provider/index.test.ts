@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveResearchProvider } from "./index";
 import { DEV_RESEARCH_PROVIDER_ID } from "./dev-provider";
+import { GEMINI_SEARCH_PROVIDER_ID } from "./gemini-search-provider";
 import { OPENROUTER_SEARCH_PROVIDER_ID } from "./openrouter-search-provider";
 
 /**
@@ -135,6 +136,87 @@ describe("with an OpenRouter endpoint configured", () => {
     // A missing key becomes a 401 from the endpoint, which the adapter reports.
     expect(resolveResearchProvider().descriptor.id).toBe(
       OPENROUTER_SEARCH_PROVIDER_ID,
+    );
+  });
+});
+
+describe("with a Gemini style configured", () => {
+  function configureGemini() {
+    clearEnv();
+    vi.stubEnv("LLM_API_STYLE", "gemini");
+    vi.stubEnv("LLM_MODEL", "gemini-2.0-flash");
+    vi.stubEnv("LLM_API_KEY", FAKE_KEY);
+  }
+
+  it("resolves to the grounding adapter", () => {
+    configureGemini();
+
+    expect(resolveResearchProvider().descriptor.id).toBe(
+      GEMINI_SEARCH_PROVIDER_ID,
+    );
+  });
+
+  it("resolves to it without an endpoint being set at all", () => {
+    configureGemini();
+
+    // The difference from the OpenRouter case, asserted rather than implied.
+    // Grounding is part of the endpoint `GEMINI_API_ENDPOINT` supplies, so
+    // there is no host for the operator to name and none for this function to
+    // inspect.
+    expect(resolveResearchProvider().descriptor.id).toBe(
+      GEMINI_SEARCH_PROVIDER_ID,
+    );
+  });
+
+  it("reports retrieval as configured", () => {
+    configureGemini();
+
+    expect(resolveResearchProvider().isConfigured).toBe(true);
+  });
+
+  it("reports the provider as external, so a result is labelled honestly", () => {
+    configureGemini();
+
+    expect(resolveResearchProvider().descriptor.isExternal).toBe(true);
+  });
+
+  it("uses the planning model when no search model is set", () => {
+    configureGemini();
+
+    expect(resolveResearchProvider().descriptor.model).toBe("gemini-2.0-flash");
+  });
+
+  it("uses the search model when one is set", () => {
+    configureGemini();
+    vi.stubEnv("RESEARCH_SEARCH_MODEL", "gemini-2.0-flash-lite");
+
+    // The same knob, meaning the same thing as it does for OpenRouter: a
+    // cheaper model fetching, a stronger one reasoning.
+    expect(resolveResearchProvider().descriptor.model).toBe(
+      "gemini-2.0-flash-lite",
+    );
+  });
+
+  it("never carries the credential onto the descriptor", () => {
+    configureGemini();
+
+    // The descriptor is spread into execution records and rendered by the
+    // workspace, so a credential on it would travel with every copy.
+    expect(JSON.stringify(resolveResearchProvider().descriptor)).not.toContain(
+      FAKE_KEY,
+    );
+  });
+
+  // The `openai` branch has to defend against lookalike hosts because it matches
+  // on one. This branch matches on nothing, so there is no string to spoof — and
+  // this test states that the absence is a property of the design rather than an
+  // untested assumption.
+  it("does not consult the endpoint when choosing this adapter", () => {
+    configureGemini();
+    vi.stubEnv("LLM_ENDPOINT", "https://evil.example/v1");
+
+    expect(resolveResearchProvider().descriptor.id).toBe(
+      GEMINI_SEARCH_PROVIDER_ID,
     );
   });
 });

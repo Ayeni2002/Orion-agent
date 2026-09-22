@@ -241,10 +241,10 @@ credential is a second place to rotate it and one of them will eventually be mis
 `RESEARCH_SEARCH_MODEL` **is consumed**, by `resolveResearchProvider`, which is the point
 of use `env.ts` documents for it. Absent, retrieval uses `LLM_MODEL`.
 
-## Retrieval: the web-search adapter
+## Retrieval: the search adapters
 
 `resolveResearchProvider()` is the single place a research provider is chosen, and it
-resolves in one of two ways.
+resolves in one of three ways.
 
 **`LLM_ENDPOINT` on `openrouter.ai`** → `createOpenRouterSearchProvider`, an adapter
 speaking OpenRouter's web-search plugin. Retrieval through OpenRouter is a chat
@@ -262,35 +262,111 @@ The sources come back as `url_citation` entries on the assistant message's
 passage is what the extractor later quotes, so a citation whose text is dropped is a
 citation no finding can rest on.
 
+**`LLM_API_STYLE=gemini`** → `createGeminiSearchProvider`, an adapter speaking Google
+Search grounding. Grounding is a `tools` entry on the same `generateContent` call the
+model adapter already makes, so this too needs no endpoint and no credential of its own:
+
+```json
+{ "contents": [{ "role": "user", "parts": [{ "text": "<the query>" }] }],
+  "systemInstruction": { "parts": [{ "text": "…" }] },
+  "tools": [{ "google_search": {} }] }
+```
+
+The sources come back as `groundingMetadata.groundingChunks[].web`, each carrying a `uri`
+and a `title`. **And that is all they carry.** Google returns the pages a search found,
+not their text, so a source from this route has no passage — see "What a grounded source
+cannot carry" below, which is the most important paragraph in this section.
+
 **Anything else** → the development adapter, whose `isConfigured` is `false`. This
 includes `LLM_API_STYLE=dev` and every non-OpenRouter OpenAI-compatible endpoint: Groq,
 Together, vLLM, LM Studio, a local server. They all speak `/chat/completions` and none of
-them has a `web` plugin this adapter was written for, so the *host* is what decides, not
-the style. The narrowness is the point — a request carrying a plugin the endpoint drops
-would be ignored, the model would answer from its own weights, and the run would be
-configured, would be reached, and would retrieve nothing. Adding a second search-capable
-gateway means adding its host to `OPENROUTER_HOST` deliberately.
+them has a `web` plugin this adapter was written for, so for the `openai` style the *host*
+is what decides, not the style. The narrowness is the point — a request carrying a plugin
+the endpoint drops would be ignored, the model would answer from its own weights, and the
+run would be configured, would be reached, and would retrieve nothing. Adding a second
+search-capable OpenAI-compatible gateway means adding its host to `OPENROUTER_HOST`
+deliberately.
+
+### Why `gemini` needs no host check, and `openai` does
+
+Worth separating, because the asymmetry looks like an inconsistency and is not one.
+`openai` names a *protocol* — many vendors, many hosts, exactly one of which has a plugin
+this build knows how to ask. So the host is the only thing that can answer the question,
+and `isSearchCapableEndpoint()` exists to ask it, along with five tests for lookalike
+hosts (`notopenrouter.ai`, `openrouter.ai.evil.example`, `openrouter.ai` in a query
+string).
+
+`gemini` names a *protocol* too, but one vendor speaks it, and grounding is not a plugin
+that may or may not be present — it is part of the same endpoint and the same credential.
+So `style === "gemini"` settles it with no string to inspect and no lookalike to defend
+against. This is the case `env.ts` was pointing at when it said retrieval availability
+should be *derived rather than declared*: here it falls out of the style rather than out
+of a string comparison, which is the stronger form of the same property.
+
+### What a grounded source cannot carry
+
+This is the one place where the Gemini route is materially weaker than the OpenRouter
+one, it is a property of the provider rather than a defect in Orion, and a reader who is
+not told will read the difference as a bug.
+
+Grounding metadata carries two kinds of thing, and they are not interchangeable:
+
+- `groundingChunks[].web.uri` / `.title` — the pages the search returned. These are
+  **evidence**: locators for something that exists outside Orion.
+- `groundingSupports[].segment.text` — passages of the *model's own answer*, with
+  `groundingChunkIndices` saying which chunk supports each one. This is **generated
+  text.**
+
+The second is not read, and the temptation to read it is worth naming because it sits
+directly beside the chunk indices and is the only prose in the payload.
+`ResearchSource.content` is treated downstream as the text of the source, and
+`findings/` requires the extractor to quote it *verbatim*. Copying model prose into that
+field would produce a finding quoting a sentence no page ever contained — and the quote
+check would **pass**, because the check compares the quote against the `content` the
+adapter had just filled in. That is fabricated evidence wearing a citation, which is the
+one outcome §12 exists to prevent. `openai`'s adapter discards `message.content` for the
+same reason; this one discards `segment.text`.
+
+So a source from the Gemini route carries a URL and a title and **no `content`**. Its
+consequence is left visible rather than papered over: the finding extractor has nothing
+to quote, so a run over Gemini-retrieved sources reports findings it cannot ground, or
+reports the gap. It does not report a quotation from a page it never read. A result that
+looks thinner than expected but is true beats one that looks complete and is invented.
+
+The practical difference between the two routes, in one line: OpenRouter returns
+citations *with the cited passage*, so findings quote their sources; Gemini returns the
+pages, so findings from it are honest about having nothing to quote.
 
 ### Two properties that make a wrong wire format fail safe
 
-Neither of these is an error-handling detail; they are the reason the adapter is
-acceptable to ship without a live call behind it.
+These apply to both retrieval adapters, and they are the reason each is acceptable to
+ship without a live call behind it.
 
 **The model's prose is never read.** `message.content` is not accessed anywhere in the
-adapter or its tests. Only annotations become sources. If an endpoint ignores the plugin
-— drops an unknown field rather than rejecting the request — the model answers from its
-own weights, and that answer, *including any URL inside it*, goes in the bin. An
-endpoint that silently stops searching cannot therefore put generated text into a result
-as though it were retrieved.
+OpenRouter adapter or its tests, and `candidate.content` is not accessed in the Gemini
+one — nor is `groundingSupports[].segment.text`, for the reason directly above. Only
+citations and chunks become sources. If an endpoint ignores the search instruction —
+drops an unknown field rather than rejecting the request — the model answers from its
+own weights, and that answer, *including any URL inside it*, goes in the bin. An endpoint
+that silently stops searching cannot therefore put generated text into a result as though
+it were retrieved.
 
-**Citations are the evidence that a search happened.** A response with no citations
-reports `performedRetrieval: false`, even though the HTTP call succeeded and the payload
-was well-formed. The two causes of an empty citation list — the plugin was ignored, or it
-ran and found nothing — are indistinguishable from the client, and the direction of the
-error is chosen deliberately: understating a search yields an honest `insufficient`,
-overstating one yields a lie. `provider/provider.ts` defines the flag exactly this way —
-"a provider that could not search at all returns an empty array and
-`performedRetrieval: false`".
+**Citations are the evidence that a search happened.** A response with no citations — or,
+for Gemini, no grounding chunks — reports `performedRetrieval: false`, even though the
+HTTP call succeeded and the payload was well-formed. The two causes of an empty list —
+the search was ignored, or it ran and found nothing — are indistinguishable from the
+client, and the direction of the error is chosen deliberately: understating a search
+yields an honest `insufficient`, overstating one yields a lie. `provider/provider.ts`
+defines the flag exactly this way — "a provider that could not search at all returns an
+empty array and `performedRetrieval: false`".
+
+For Gemini this property does a second job, and it is why that adapter is shippable
+before its payload has been observed. The exact spelling of `groundingMetadata` is the
+one thing about that adapter that was written from documentation rather than from a call.
+If it has been misread, the adapter finds no chunks, and the run reports that it retrieved
+nothing. A wrong guess therefore costs a failed search, never a fabricated source — which
+is what `gemini-search-provider.test.ts`'s "what it refuses to read" group pins down, one
+unrecognised shape at a time.
 
 A response that is *not* a completion at all — no `choices`, a malformed choice, no
 `message` — is a different case and **throws**, because that is an endpoint not speaking
@@ -310,10 +386,12 @@ account fails at *planning*, which uses the same endpoint and the same credentia
 
 ### Verifying it live
 
-The wire format above is OpenRouter's documented plugin API. What no test can establish
-is that a given account and a given model honour it, because a test that reached the real
+Both wire formats above are the providers' documented APIs. What no test can establish is
+that a given account and a given model honour them, because a test that reached a real
 endpoint would fail on a plane, in CI, and the day a key is rotated. One command answers
-it:
+it for each route.
+
+**OpenRouter:**
 
 ```
 curl -s https://openrouter.ai/api/v1/chat/completions \
@@ -327,14 +405,51 @@ the response carries prose and no `annotations`, the plugin is not being applied
 model — and Orion will report `performedRetrieval: false` and an `insufficient` result
 rather than presenting the prose as sourced.
 
+**Gemini:**
+
+```
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "x-goog-api-key: $LLM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"What is the capital of France?"}]}],"tools":[{"google_search":{}}]}'
+```
+
+The key rides in the header here on purpose. Gemini also accepts `?key=`, most examples
+show that form, and a URL is copied into proxy logs, access logs and error messages —
+`gemini-provider.test.ts` asserts the adapter never builds one.
+
+What to look for is a `candidates[0].groundingMetadata.groundingChunks` array. **This is
+the one thing in the whole Gemini route that no test in this repository can confirm**,
+because it depends on a live response shape that was written from documentation. Three
+outcomes, and each is actionable:
+
+- **Chunks present, with `web.uri` and `web.title`** → retrieval works, and the adapter's
+  reading of the payload is right. Run a real question through `/research` and confirm
+  sources arrive.
+- **Chunks present but spelled differently** (a nested `web.url`, a different container) →
+  the adapter finds nothing, reports `performedRetrieval: false`, and the run returns an
+  `insufficient` result. The fix is `readChunk` in `research/provider/gemini-search-provider.ts`
+  and one case in that file's "what it refuses to read" group. The failure is safe; it is
+  also invisible unless someone runs this command, which is why it is written down.
+- **No `groundingMetadata` at all**, and prose answering from the model's weights → the
+  account or model does not have grounding enabled. Orion reports an `insufficient`
+  result rather than presenting the prose as sourced, which is correct and is not a bug
+  to fix.
+
+`GET /api/research/capabilities` reports retrieval as **configured** for a Gemini
+configuration, because the style settles that question without a call — so it will say
+configured in all three outcomes above. The capability answer is about whether Orion has
+somewhere to send the request, and it never claims a search succeeded; this command is
+what settles that.
+
 ## When retrieval is not configured
 
 `resolveResearchProvider()` returns the development adapter, whose `isConfigured` is
-`false`. Every run that is not pointed at OpenRouter therefore stops at
-`search_not_configured` **before planning**, with a message naming the variables to set,
-and the record is `failed` with that error attached. That covers the `dev` default and
-every other OpenAI-compatible endpoint — Groq, Together, vLLM, LM Studio — because the
-`web` plugin is what makes this a search and only OpenRouter has it.
+`false`. Every run that is not pointed at OpenRouter and is not on the Gemini style
+therefore stops at `search_not_configured` **before planning**, with a message naming the
+variables to set, and the record is `failed` with that error attached. That covers the
+`dev` default and every other OpenAI-compatible endpoint — Groq, Together, vLLM, LM
+Studio — because the `web` plugin is what makes this a search and only OpenRouter has it.
 `GET /api/research/capabilities` reports the same thing before a question is typed, so a
 user does not have to spend a run to learn it.
 

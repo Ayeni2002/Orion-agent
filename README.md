@@ -7,19 +7,21 @@ intended workflow — understand an objective, plan the work, select tools,
 execute, observe, evaluate, and revise — is real, and so is the research layer
 above it: a question is planned into retrieval tasks, searched, deduplicated,
 read for findings, and returned with the evidence behind every claim that has
-any. Retrieval is real too, when it is configured: point `LLM_ENDPOINT` at
-OpenRouter and a question comes back with sources and quotes. Point it anywhere
-else and the provider says it cannot search rather than pretending it looked.
+any. Retrieval is real too, when it is configured, and there are two routes to
+it: point `LLM_ENDPOINT` at OpenRouter and a question comes back with sources and
+quotes, or set `LLM_API_STYLE=gemini` and it comes back with the pages Google
+Search grounding found. Point an OpenAI-compatible endpoint anywhere else and the
+provider says it cannot search rather than pretending it looked.
 
 > **Phase 5 is research intelligence.** A question can be planned into retrieval
 > tasks, searched, normalised, deduplicated, read for findings, evaluated and
 > returned as a structured record in which every claim that rests on a source
 > carries the passage it rests on. Set `LLM_API_STYLE=openai` with
-> `LLM_ENDPOINT=https://openrouter.ai/api/v1` and retrieval is on; leave it unset
-> and the deterministic development adapter reports itself as unconfigured, so a
-> research run stops with `search_not_configured` before it plans anything rather
-> than appearing to search. See
-> [Not implemented](#not-implemented).
+> `LLM_ENDPOINT=https://openrouter.ai/api/v1`, or `LLM_API_STYLE=gemini`, and
+> retrieval is on; leave it unset and the deterministic development adapter
+> reports itself as unconfigured, so a research run stops with
+> `search_not_configured` before it plans anything rather than appearing to
+> search. See [Not implemented](#not-implemented).
 
 ## Documentation
 
@@ -42,11 +44,12 @@ else and the provider says it cannot search rather than pretending it looked.
 
 The model provider is **configuration, not a dependency**. No provider SDK is
 installed and no vendor is named in the engine — the engine talks to a
-`ModelProvider` interface, and two adapters implement it: a deterministic local
-one, and one that speaks the OpenAI-compatible `/chat/completions` protocol,
-which is how OpenRouter, Groq, Together, vLLM, LM Studio and OpenAI itself are
-all reached. Choosing a vendor is a matter of setting `LLM_API_STYLE`,
-`LLM_ENDPOINT` and `LLM_MODEL`.
+`ModelProvider` interface, and three adapters implement it: a deterministic local
+one, one that speaks the OpenAI-compatible `/chat/completions` protocol (which is
+how OpenRouter, Groq, Together, vLLM, LM Studio and OpenAI itself are all
+reached), and one that speaks Google's native `generateContent`. Choosing a
+vendor is a matter of setting `LLM_API_STYLE`, `LLM_ENDPOINT` and `LLM_MODEL` —
+though `gemini` fills in its own endpoint, being one vendor at one host.
 
 **The default is the deterministic adapter**, because the default must be a
 configuration that works with no credentials at all.
@@ -122,7 +125,9 @@ src/
 
 ```
 src/server/agent/
-  provider/     ModelProvider interface, the development adapter, a scripted test one
+  provider/     ModelProvider interface, the OpenAI-compatible and native Gemini
+                adapters, the shared prompts, the development adapter and a
+                scripted test one
   planner/      objective → validated plan (Zod, plus a dependency-graph check)
   executor/     walks the plan, records observations, calls tools through the tool layer
   tools/        the tool system — definitions, registry, executor, catalogue
@@ -163,8 +168,8 @@ including the seven steps for adding a tool.
 
 ```
 src/server/research/
-  provider/     ResearchProvider interface, the OpenRouter web-search adapter,
-                the development adapter, a scripted test one
+  provider/     ResearchProvider interface, the OpenRouter and Gemini
+                retrieval adapters, the development adapter, a scripted test one
   planner/      question → validated retrieval tasks (Zod, plus a duplicate-query check)
   tools/        research.search — the only tool in Orion that declares `network`
   findings/     source text → claims, each with the passage it rests on
@@ -283,10 +288,11 @@ The AI provider is configured by wire protocol rather than by vendor, and every
 value is read in `src/lib/env.ts` and nowhere else:
 
 ```
-LLM_API_STYLE=        # "dev" (default) | "openai"
-LLM_ENDPOINT=         # base URL only, e.g. https://openrouter.ai/api/v1
+LLM_API_STYLE=        # "dev" (default) | "openai" | "gemini"
+LLM_ENDPOINT=         # base URL; optional for "gemini", required for "openai"
 LLM_MODEL=            # the endpoint's own model id, e.g. openai/gpt-4o
-LLM_API_KEY=          # optional; a local endpoint needs none
+LLM_API_KEY=          # optional for "openai" — a local endpoint needs none;
+                      # "gemini" requires one
 ```
 
 `LLM_API_STYLE=dev` needs none of the other three and reaches nothing. Any other
@@ -294,9 +300,9 @@ style is rejected unless it is one an adapter exists for, because naming a style
 Orion cannot construct would turn a configuration mistake into a run that appears
 to use a real model and does not.
 
-**Retrieval turns on with the endpoint, and only for one of them.** A research
-run can search exactly when `LLM_ENDPOINT` points at `openrouter.ai`, whose `web`
-plugin is the one this build knows how to ask:
+**Retrieval turns on with the configuration, and there are two configurations
+that do it.** One is `LLM_ENDPOINT` on `openrouter.ai`, whose `web` plugin is one
+of the two routes this build knows how to ask:
 
 ```
 LLM_API_STYLE=openai
@@ -305,13 +311,32 @@ LLM_MODEL=openai/gpt-4o
 LLM_API_KEY=<your key>
 ```
 
-There is no research endpoint and no research credential: retrieval is a chat
-completion with a plugin attached, so it uses the same two variables as planning.
+The other is the Gemini style, whose Google Search grounding is a `tools` entry
+on the same `generateContent` call. One key, one endpoint, and `LLM_ENDPOINT` is
+not needed because the style supplies Google's:
+
+```
+LLM_API_STYLE=gemini
+LLM_MODEL=<a current id, e.g. gemini-2.5-flash>
+LLM_API_KEY=<your Google AI Studio key>
+```
+
+There is no research endpoint and no research credential for either: retrieval
+borrows the same two variables as planning. The two differ in what they return,
+and the difference is a property of the providers rather than of Orion.
+OpenRouter's citations carry the passage, so findings from that route quote their
+sources. Google's grounding returns the pages a search found but **not their
+text**, so sources from that route carry a URL and a title and no passage — and a
+run's findings say it could not quote them rather than quoting something a page
+never contained. Neither route invents evidence where it has none; the Gemini one
+is the thinner of the two.
+
 Any *other* OpenAI-compatible endpoint — Groq, Together, vLLM, LM Studio, a local
 server — speaks the same protocol but has no such plugin, so it resolves to the
 development adapter and a run stops at `search_not_configured` rather than
 sending a plugin the endpoint would silently drop. `RESEARCH_SEARCH_MODEL`
-optionally names a cheaper model for fetching; it defaults to `LLM_MODEL`.
+optionally names a cheaper model for fetching; it defaults to `LLM_MODEL`, and it
+means the same thing for both routes.
 
 The research limits are Phase 5's, and each one bounds a loop over a metered
 endpoint. Leaving them all unset gives 5 tasks, 5 sources per task, 20 sources,
@@ -335,20 +360,30 @@ Everything below belongs to later phases and is deliberately absent. None of it
 should be described as working:
 
 - **Retrieval against an unverified service.** The `ResearchProvider` seam, the
-  search tool, the OpenRouter web-search adapter, the planner, the extraction,
-  the evaluator and the API are all built and tested against a stubbed
-  transport. What no test can establish is that a given OpenRouter account and
-  model honour the `web` plugin, because a test that reached the real endpoint
-  would fail on a plane, in CI, and the day a key is rotated. Two properties
-  make that safe rather than hopeful: the adapter never reads the model's prose,
-  only its citations, and a response carrying no citations reports
-  `performedRetrieval: false`. An endpoint that silently ignores the plugin
+  search tool, both retrieval adapters — OpenRouter's web plugin and Gemini's
+  Google Search grounding — the planner, the extraction, the evaluator and the
+  API are all built and tested against a stubbed transport. What no test can
+  establish is that a given account and model honour either route, because a
+  test that reached the real endpoint would fail on a plane, in CI, and the day
+  a key is rotated. Two properties make that safe rather than hopeful: neither
+  adapter ever reads the model's prose, only its citations or its grounding
+  chunks, and a response carrying neither reports `performedRetrieval: false`.
+  An endpoint that silently ignores the plugin, or an account without grounding,
   therefore yields an honest `insufficient` result and cannot put generated text
   into a finding as though it were retrieved. `.env.example` and
-  `docs/RESEARCH.md` carry the one `curl` that confirms it against a live
-  account.
-- **Search through any endpoint other than OpenRouter.** `resolveResearchProvider`
-  accepts one host, deliberately — see the environment section above.
+  `docs/RESEARCH.md` carry the two `curl` commands that confirm each route
+  against a live account. The Gemini route is the one that is additionally
+  **unwritten-from-observation** — its `groundingMetadata` shape was taken from
+  documentation, so the same fail-safe is what makes shipping it before the live
+  check defensible rather than reckless.
+- **Search through an endpoint this build has no adapter for.** Two routes exist
+  and both are narrow — OpenRouter by host, Gemini by style. `resolveResearchProvider`
+  refuses everything else, deliberately: see the environment section above.
+- **Quoted findings from a Gemini-retrieved source.** Grounding returns the pages
+  a search found and not their text, so those sources carry a URL and a title and
+  no passage. Findings resting on them say so rather than quoting a sentence the
+  page never contained. The OpenRouter route is the one that produces quoted
+  findings.
 - **URL fetching.** Orion records a source's URL and never dereferences it. There
   is no fetcher to abuse, and the vetting in `research/url-safety.ts` is written
   as though there were one.
