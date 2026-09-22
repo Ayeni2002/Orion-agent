@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   FileText,
   Folder,
   LayoutDashboard,
@@ -56,6 +57,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     label: "Reports",
     description: "Structured results you can read",
     icon: FileText,
+  },
+  {
+    href: "/docs",
+    label: "Docs",
+    description: "What Orion is and how it is built",
+    icon: BookOpen,
   },
   {
     href: "/settings",

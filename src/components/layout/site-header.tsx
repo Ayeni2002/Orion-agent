@@ -7,14 +7,20 @@ import { isNavItemActive } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
 /**
- * The two links worth surfacing on the public page.
+ * The links worth surfacing on the public page.
  *
  * Named to avoid colliding with `NAV_ITEMS` in `src/lib/navigation.ts` — that
  * is the full application navigation, this is a subset shown to visitors.
+ *
+ * `Docs` is here rather than only in the application sidebar because a visitor
+ * who has not entered the application yet is exactly the reader the page is
+ * for: it states what is and is not built, which is the question someone
+ * deciding whether to look further actually has.
  */
 const PUBLIC_NAV_ITEMS = [
   { href: "/overview", label: "Overview" },
   { href: "/workspace", label: "Workspace" },
+  { href: "/docs", label: "Docs" },
 ] as const;
 
 export function SiteHeader() {
